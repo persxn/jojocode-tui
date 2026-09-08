@@ -1,0 +1,24 @@
+{
+  "name": "jojoai",
+  "private": true,
+  "version": "0.0.0",
+  "description": "JojoCode AI TUI — a terminal AI coding agent. Run it fully local against your own Ollama, or connect to a hosted server. See docs/BUILD-PLAN.md.",
+  "type": "module",
+  "workspaces": [
+    "server/shared",
+    "server/backend",
+    "server/control-plane"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "spike:resume": "bash docs/phase0/spike-ws-resume/run.sh",
+    "bench:ollama": "node docs/phase0/bench.mjs",
+    "typecheck": "npm run -ws --if-present typecheck",
+    "test": "npm run -w @jojoai/shared test && npm run -w @jojoai/control-plane test && npm run spike:resume"
+  },
+  "devDependencies": {
+    "ws": "^8.18.0"
+  }
+}

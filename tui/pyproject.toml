@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jojocode-ai-tui"
+version = "0.2.0"
+description = "A curses agentic coding assistant for the terminal — runs against your own Ollama, or a remote server."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "persxn" }]
+keywords = ["ollama", "agent", "tui", "curses", "coding-assistant", "llm"]
+classifiers = [
+  "Environment :: Console :: Curses",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development",
+]
+
+# The core TUI is stdlib-only. On Windows the stdlib has no `curses`, so pull in
+# the drop-in `windows-curses` backport there.
+dependencies = [
+  "windows-curses>=2.3.0; sys_platform == 'win32'",
+]
+
+[project.urls]
+Homepage = "https://ai.jojocode.in"
+Source = "https://github.com/persxn/jojocode-tui"
+
+[project.scripts]
+jojo = "jojocode_ai.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["jojocode_ai"]

@@ -1,0 +1,37 @@
+# node
+node_modules/
+*.tsbuildinfo
+coverage/
+server/shared/src/generated/
+
+# build output
+dist/
+dist/dl/
+build/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# secrets / local — only .env.example is tracked
+.env
+.env.*
+!.env.example
+*.token
+.tunnel-token
+.cf-api-token
+.demo-code
+
+# spike scratch
+docs/phase0/spike-ws-resume/journal.json
+docs/phase0/spike-ws-resume/sideeffect.log
+
+# misc
+*.log
+.DS_Store

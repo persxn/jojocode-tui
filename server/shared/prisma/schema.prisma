@@ -1,0 +1,383 @@
+// Jojo AI — data model (control-plane database).
+//
+// SEPARATE database from JojoCode (decision D3): its own accounts, its own
+// credentials, zero runtime coupling to JojoCode auth. Lives on the always-on
+// control plane (co-located with JojoCode) so accounts/grants/status work while
+// the the backend host is offline. The backend reads this via an authz API and
+// keeps its own hot session state.
+//
+// Decisions encoded here: D3 (separate identity), D6 (session cap + idle +
+// queue), D7 (inference knob), D9 (email+OTP, no password), D10 (per-user paid
+// toggle), D14 (opaque token, only the hash stored).
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("JOJOAI_DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Accounts & access
+// ---------------------------------------------------------------------------
+
+/// Lifecycle of a Jojo AI account. Distinct from whether access is *currently
+/// active* — that is an AccessGrant question, evaluated per request (D6/authorize).
+enum AccountStatus {
+  PENDING // requested, not yet approved by the owner
+  APPROVED // owner approved; may hold grants
+  SUSPENDED // temporarily blocked; grants ignored while suspended
+  DELETED // soft-deleted; tokens/sessions killed, PII scheduled for purge
+}
+
+/// D10 — per-user Razorpay paid toggle. FREE = access on approval;
+/// PAYMENT_REQUIRED = a grant only activates once a linked Payment is PAID.
+enum AccessMode {
+  FREE
+  PAYMENT_REQUIRED
+}
+
+/// RBAC. USER = an ordinary tenant (needs an active AccessGrant to connect).
+/// ADMIN = can run the panel (accounts, grants, live sessions, config read) and
+/// connects without a grant. SUPERADMIN = ADMIN + config write, account delete,
+/// role assignment, audit export. The owner is the sole SUPERADMIN.
+enum Role {
+  USER
+  ADMIN
+  SUPERADMIN
+}
+
+model Account {
+  id              String        @id @default(cuid())
+  email           String        @unique
+  displayName     String
+  status          AccountStatus @default(PENDING)
+  role            Role          @default(USER)
+  accessMode      AccessMode    @default(FREE)
+
+  approvedBy      String? // JojoCode SuperAdmin actor id (D4)
+  approvedAt      DateTime?
+  suspendedAt     DateTime?
+  suspendedReason String?
+  deletedAt       DateTime?
+
+  notes           String? // owner-only free text
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  grants          AccessGrant[]
+  authSessions    AuthSession[]
+  agentSessions   AgentSession[]
+  queueEntries    SessionQueueEntry[]
+  payments        Payment[]
+
+  @@index([status])
+  @@map("account")
+}
+
+/// A time-boxed authorization to use Jojo AI. An account may have a history of
+/// grants. "Access is active" ⇔ now ∈ [startsAt, expiresAt) AND revokedAt IS NULL
+/// AND the owning account is APPROVED (not suspended/deleted). Extend/shorten =
+/// update expiresAt (write an AuditEvent with before/after — OD-5).
+model AccessGrant {
+  id           String    @id @default(cuid())
+  accountId    String
+  account      Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  startsAt     DateTime
+  expiresAt    DateTime
+  grantedBy    String // SuperAdmin actor id
+  reason       String
+
+  revokedAt    DateTime?
+  revokedBy    String?
+  revokeReason String?
+
+  createdAt    DateTime  @default(now())
+
+  payment      Payment?
+
+  @@index([accountId, expiresAt])
+  @@index([expiresAt]) // for the expiry sweep
+  @@map("access_grant")
+}
+
+/// Public intake (the hosted service). A request is NOT an account until the
+/// owner approves it; approval creates/links an Account. Kept separate so spam
+/// and enumeration attempts never touch the account table.
+enum AccessRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model AccessRequest {
+  id           String              @id @default(cuid())
+  email        String
+  displayName  String
+  message      String?
+  status       AccessRequestStatus @default(PENDING)
+
+  sourceIp     String?
+  userAgent    String?
+
+  createdAt    DateTime            @default(now())
+  decidedBy    String?
+  decidedAt    DateTime?
+  decisionNote String?
+
+  @@index([status, createdAt])
+  @@index([email])
+  @@map("access_request")
+}
+
+// ---------------------------------------------------------------------------
+// Authentication (D9 — email + OTP every login, no user password; D14 — opaque token)
+// ---------------------------------------------------------------------------
+
+model OtpChallenge {
+  id          String    @id @default(cuid())
+  email       String
+  codeHash    String // never store the code itself
+  purpose     String    @default("login")
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(5)
+  requestIp   String?
+  createdAt   DateTime  @default(now())
+
+  @@index([email, createdAt])
+  @@index([expiresAt]) // cleanup sweep
+  @@map("otp_challenge")
+}
+
+/// A CLI login. token = 32 random bytes, base64url; only tokenHash is stored
+/// (D14). expiresAt = min(active grant expiresAt, config.sessionMaxTtlHours).
+/// Revoke/expire/suspend = set revokedAt → next request fails immediately.
+model AuthSession {
+  id            String    @id @default(cuid())
+  accountId     String
+  account       Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  tokenHash     String    @unique
+  issuedAt      DateTime  @default(now())
+  expiresAt     DateTime
+  lastSeenAt    DateTime  @default(now())
+  revokedAt     DateTime?
+  revokeReason  String?
+
+  ip            String?
+  userAgent     String?
+
+  agentSessions AgentSession[]
+
+  @@index([accountId])
+  @@index([expiresAt])
+  @@map("auth_session")
+}
+
+// ---------------------------------------------------------------------------
+// Agent sessions (D2 — server-side loop; D6 — seats, idle, queue, resume)
+// ---------------------------------------------------------------------------
+
+enum AgentSessionState {
+  STARTING
+  ACTIVE
+  IDLE
+  QUEUED
+  ENDED
+}
+
+enum AgentSessionEndReason {
+  USER_QUIT
+  IDLE_TIMEOUT
+  REVOKED
+  EXPIRED
+  OUT_OF_HOURS
+  SERVER_RESTART
+  EVICTED
+  ERROR
+}
+
+/// One CLI agent session. Holds a seat (D6) from connect until
+/// disconnect/logout/crash OR idle > config.idleReleaseMinutes. State is also
+/// held hot on the backend host; this row is the durable record for resume + the admin
+/// "live sessions" view. resumeTokenHash lets a dropped client rebind within
+/// the resume window without re-executing tools (see spike-ws-resume, F2).
+model AgentSession {
+  id              String                 @id @default(cuid())
+  authSessionId   String
+  authSession     AuthSession            @relation(fields: [authSessionId], references: [id], onDelete: Cascade)
+  accountId       String
+  account         Account                @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  state           AgentSessionState      @default(STARTING)
+  seatNo          Int?
+  projectLabel    String? // human label only; never a path
+  clientRootHash  String? // hash of the client's project root, for continuity checks
+
+  startedAt       DateTime               @default(now())
+  lastActivityAt  DateTime               @default(now())
+  endedAt         DateTime?
+  endReason       AgentSessionEndReason?
+
+  resumeTokenHash String?
+
+  turns           AgentTurn[]
+
+  @@index([state])
+  @@index([accountId, startedAt])
+  @@index([lastActivityAt]) // idle sweep
+  @@map("agent_session")
+}
+
+enum TurnRole {
+  USER
+  ASSISTANT
+  TOOL
+}
+
+/// Transcript + usage, one row per turn. contentRef points at blob storage for
+/// large content (retention: transcripts purged at 30d — P7). toolCallsJson
+/// records tool requests/results for audit and exactly-once replay.
+model AgentTurn {
+  id             String       @id @default(cuid())
+  agentSessionId String
+  agentSession   AgentSession @relation(fields: [agentSessionId], references: [id], onDelete: Cascade)
+
+  ord            Int
+  role           TurnRole
+  contentRef     String?
+  tokensIn       Int          @default(0)
+  tokensOut      Int          @default(0)
+  modelMs        Int          @default(0)
+  toolCallsJson  Json?
+
+  createdAt      DateTime     @default(now())
+
+  @@unique([agentSessionId, ord])
+  @@map("agent_turn")
+}
+
+enum QueueOutcome {
+  PROMOTED
+  TIMED_OUT
+  CANCELLED
+}
+
+/// D6b — when seats are full and config.whenFull = QUEUE, a waiting client sits
+/// here. Head of queue is promoted when a seat frees; exceeds
+/// config.maxQueueWaitMinutes → TIMED_OUT.
+model SessionQueueEntry {
+  id            String        @id @default(cuid())
+  accountId     String
+  account       Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  authSessionId String
+
+  enqueuedAt    DateTime      @default(now())
+  position      Int
+  notifiedAt    DateTime?
+  expiredAt     DateTime?
+  resolvedAt    DateTime?
+  outcome       QueueOutcome?
+
+  @@index([enqueuedAt])
+  @@map("session_queue_entry")
+}
+
+// ---------------------------------------------------------------------------
+// Payments (D10 — reuse JojoCode's Razorpay integration)
+// ---------------------------------------------------------------------------
+
+enum PaymentStatus {
+  CREATED
+  PAID
+  FAILED
+  REFUNDED
+}
+
+model Payment {
+  id               String        @id @default(cuid())
+  accountId        String
+  account          Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  razorpayOrderId  String        @unique
+  razorpayPaymentId String?      @unique
+  amountPaise      Int
+  currency         String        @default("INR")
+  status           PaymentStatus @default(CREATED)
+
+  grantId          String?       @unique
+  grant            AccessGrant?  @relation(fields: [grantId], references: [id])
+
+  createdAt        DateTime      @default(now())
+  paidAt           DateTime?
+
+  @@index([accountId])
+  @@map("payment")
+}
+
+// ---------------------------------------------------------------------------
+// Audit (every admin action + access decision) & config
+// ---------------------------------------------------------------------------
+
+enum ActorType {
+  OWNER // a JojoCode SuperAdmin
+  SYSTEM // a sweep, the reaper, a webhook
+  ACCOUNT // an end user
+}
+
+model AuditEvent {
+  id         String    @id @default(cuid())
+  actorType  ActorType
+  actorId    String? // SuperAdmin id, account id, or null for SYSTEM
+  action     String // e.g. "account.approve", "grant.extend", "session.force_disconnect", "authz.deny"
+  targetType String? // "account" | "grant" | "agent_session" | ...
+  targetId   String?
+  beforeJson Json?
+  afterJson  Json?
+  reason     String?
+  ip         String?
+  createdAt  DateTime  @default(now())
+
+  @@index([createdAt])
+  @@index([actorType, actorId])
+  @@index([targetType, targetId])
+  @@map("audit_event")
+}
+
+/// Singleton (id = "singleton"). Every knob the owner configures from the admin
+/// panel (D4). Defaults reflect the Phase 0 benchmark (F1): 4 inference slots,
+/// 8 seats, 15-min idle release.
+model ServiceConfig {
+  id                     String   @id @default("singleton")
+
+  serviceEnabled         Boolean  @default(true)
+  maintenanceMessage     String?
+
+  maxConcurrentSessions  Int      @default(8) // D6 — seat cap
+  idleReleaseMinutes     Int      @default(15) // D6a
+  whenFull               String   @default("QUEUE") // D6b — "QUEUE" | "REJECT"
+  maxQueueLength         Int      @default(5)
+  maxQueueWaitMinutes    Int      @default(10)
+
+  maxConcurrentInference Int      @default(4) // D7 / F1 — matches OLLAMA_NUM_PARALLEL
+  perUserMsgsPerMin      Int      @default(20)
+  perUserTokensPerDay    Int      @default(2000000)
+
+  sessionMaxTtlHours     Int      @default(12)
+
+  // Weekly availability schedule, IANA tz. JSON shape:
+  // { "tz": "Asia/Kolkata", "windows": [ { "days": [1,2,3,4,5], "from": "09:00", "to": "23:00" } ] }
+  openHoursJson          Json?
+
+  updatedAt              DateTime @updatedAt
+  updatedBy              String?
+
+  @@map("service_config")
+}
