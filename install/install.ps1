@@ -75,13 +75,31 @@ if (-not (Test-Path (Join-Path $Venv 'Scripts\python.exe'))) {
 }
 $vpy = Join-Path $Venv 'Scripts\python.exe'
 & $vpy -m pip install --quiet --upgrade pip | Out-Null
-$src = if ($env:JOJO_TUI_SOURCE) { $env:JOJO_TUI_SOURCE } else { 'jojocode-ai-tui' }
-$ok = $true
-try { & $vpy -m pip install --quiet $src } catch { $ok = $false }
-if (-not $ok) {
-  Write-Host '  installing from the git repo'
-  & $vpy -m pip install --quiet $RepoPip
+
+function Pip($spec) { & $vpy -m pip install --quiet $spec; return ($LASTEXITCODE -eq 0) }
+
+$installed = $false
+if ($env:JOJO_TUI_SOURCE) {
+  if (-not (Pip $env:JOJO_TUI_SOURCE)) { Die "could not install '$env:JOJO_TUI_SOURCE'" }
+  $installed = $true
+} else {
+  # 1) prebuilt wheel from the endpoint - needs only pip; no git, no build tools
+  try {
+    $wheel = (Invoke-RestMethod -UseBasicParsing "$Endpoint/dl/tui-wheel").Trim()
+    if ($wheel -like '*.whl' -and (Pip "$Endpoint/dl/$wheel")) { $installed = $true; Write-Host "  from $wheel" }
+  } catch { }
+  # 2) PyPI
+  if (-not $installed -and (Pip 'jojocode-ai-tui')) { $installed = $true; Write-Host '  from PyPI' }
+  # 3) the git repo (needs git - install it if we can)
+  if (-not $installed) {
+    if (-not (Have git) -and (Have winget)) {
+      winget install --id Git.Git -e --silent --accept-source-agreements --accept-package-agreements
+      $env:Path = [Environment]::GetEnvironmentVariable('Path','User') + ';' + [Environment]::GetEnvironmentVariable('Path','Machine')
+    }
+    if ((Have git) -and (Pip $RepoPip)) { $installed = $true; Write-Host '  from the git repo' }
+  }
 }
+if (-not $installed) { Die 'could not install the TUI (no wheel, no PyPI, no git)' }
 Write-Host "  $(& (Join-Path $Venv 'Scripts\jojo.exe') --version 2>&1)"
 
 # --- 3. shim + PATH ----------------------------------------------

@@ -110,13 +110,29 @@ fi
 step "The TUI"
 mkdir -p "$PREFIX"
 [ -x "$VENV/bin/python" ] || "$PY" -m venv "$VENV"
-"$VENV/bin/python" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
-SRC="${JOJO_TUI_SOURCE:-jojocode-ai-tui}"
-if ! "$VENV/bin/python" -m pip install --quiet "$SRC" 2>/dev/null; then
-  say "  installing from the git repo"
-  "$VENV/bin/python" -m pip install --quiet "$REPO_PIP" \
-    || die "could not install the TUI (tried '$SRC' and the git repo)"
+PIP() { "$VENV/bin/python" -m pip install --quiet "$@"; }
+PIP --upgrade pip >/dev/null 2>&1 || true
+
+installed=0
+if [ -n "${JOJO_TUI_SOURCE:-}" ]; then
+  PIP "$JOJO_TUI_SOURCE" && installed=1 || die "could not install '$JOJO_TUI_SOURCE'"
+else
+  # 1) a prebuilt wheel from the endpoint — needs only pip; no git, no build tools
+  WHEEL="$(fetch "$ENDPOINT/dl/tui-wheel" 2>/dev/null | tr -d ' \r\n' || true)"
+  case "$WHEEL" in
+    *.whl) PIP "$ENDPOINT/dl/$WHEEL" && { installed=1; say "  from $ENDPOINT/dl/$WHEEL"; } ;;
+  esac
+  # 2) PyPI
+  [ "$installed" = 0 ] && PIP jojocode-ai-tui && { installed=1; say "  from PyPI"; }
+  # 3) the git repo (needs git — install it if we can)
+  if [ "$installed" = 0 ]; then
+    command -v git >/dev/null 2>&1 || pm_install git || true
+    if command -v git >/dev/null 2>&1; then
+      PIP "$REPO_PIP" && { installed=1; say "  from the git repo"; }
+    fi
+  fi
 fi
+[ "$installed" = 1 ] || die "could not install the TUI (no wheel, no PyPI, no git)"
 say "  $("$VENV/bin/jojo" --version 2>/dev/null || echo installed)"
 
 # --- 3. launcher --------------------------------------------------
