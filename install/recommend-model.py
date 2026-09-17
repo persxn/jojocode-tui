@@ -3,9 +3,15 @@
 actually run well, then (optionally) pull it and launch the TUI.
 
     python3 recommend-model.py              # just print the recommendation
-    python3 recommend-model.py --pull       # also `ollama pull` it
-    python3 recommend-model.py --run        # pull, then `jojo --model <it>`
+    python3 recommend-model.py --pull       # pull it, and save it as the default
+    python3 recommend-model.py --run        # pull, save, then launch `jojo`
+    python3 recommend-model.py --save       # only write it down (no download)
     python3 recommend-model.py --json       # machine-readable
+
+Pulling also *saves* the choice to ~/.config/jojocode-ai/settings.json, which
+is what `jojo` reads on startup. Without that step the installer would pull a
+model this machine can run and the TUI would still open on the built-in
+default -- which is exactly what it used to do.
 
 stdlib only. Detects total RAM, CPU cores, and NVIDIA VRAM / Apple unified
 memory. The ranking is deliberately conservative — a model that swaps is worse
@@ -127,6 +133,43 @@ def recommend(info: dict) -> tuple[str, str]:
     return name, blurb + " (this machine is below every comfortable target)"
 
 
+def settings_path() -> str:
+    base = os.environ.get("JOJO_CONFIG") or os.path.join(
+        os.path.expanduser("~"), ".config", "jojocode-ai")
+    return os.path.join(base, "settings.json")
+
+
+def save_model(model: str) -> str | None:
+    """Write the chosen model where the TUI looks for it.
+
+    Merges rather than overwrites: this file also holds `host`, and an
+    installer re-run must not silently drop the rest of somebody's settings.
+    Never fatal -- a machine with an unwritable home still gets the model it
+    pulled, it just has to be named on the command line.
+    """
+    path = settings_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+        data["model"] = model
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+        return path
+    except OSError as e:
+        print(f"  ! could not save the default model ({e})", file=sys.stderr)
+        print(f"    start it with:  jojo --model {model}", file=sys.stderr)
+        return None
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="recommend-model")
     ap.add_argument("--json", action="store_true", help="print JSON and exit")
@@ -134,6 +177,10 @@ def main(argv=None) -> int:
     ap.add_argument("--run", action="store_true", help="pull, then launch `jojo` with it")
     ap.add_argument("--yes", "-y", action="store_true", help="don't ask before pulling")
     ap.add_argument("--model", help="skip detection; use this model")
+    ap.add_argument("--save", action="store_true",
+                    help="write this model to settings.json as the default (implied by --pull/--run)")
+    ap.add_argument("--no-save", dest="no_save", action="store_true",
+                    help="pull, but leave the default alone")
     args = ap.parse_args(argv)
 
     info = detect()
@@ -152,10 +199,18 @@ def main(argv=None) -> int:
     print(f"    {why}")
     print()
 
+    if args.save and not (args.pull or args.run):
+        path = save_model(model)
+        if path:
+            print(f"  saved as the default · {path}")
+            print(f"    pull it when ready:  ollama pull {model}")
+        return 0
+
     if not (args.pull or args.run):
         print("  next:")
         print(f"    ollama pull {model}")
         print(f"    jojo --model {model}")
+        print(f"    (or: recommend-model.py --save   to make it the default)")
         return 0
 
     if not shutil.which("ollama"):
@@ -169,6 +224,14 @@ def main(argv=None) -> int:
             pass
     if subprocess.run(["ollama", "pull", model]).returncode != 0:
         return 1
+
+    # Pulled it, so make it the one `jojo` opens with. This is the line whose
+    # absence made every fresh install start on a model it had not downloaded.
+    if not args.no_save:
+        path = save_model(model)
+        if path:
+            print(f"  default model set · {path}")
+
     if args.run:
         jojo = shutil.which("jojo") or [sys.executable, "-m", "jojocode_ai"]
         cmd = ([jojo] if isinstance(jojo, str) else jojo) + ["--model", model]

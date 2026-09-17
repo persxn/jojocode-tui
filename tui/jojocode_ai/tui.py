@@ -46,7 +46,8 @@ HELP = """commands
   /retry                run the last prompt again
   /tools                list the tools the model can call
   /think off|low|medium|high     set reasoning effort
-  /model <name>         switch model (e.g. gpt-oss:20b)
+  /model                what's running, and what's pulled
+  /model <name> [--save]  switch model; --save makes it this machine's default
   /cwd <path>           change the working directory tools act on
   /steps <n>            max tool iterations per turn
   /yolo                 toggle auto-approve for EVERY tool (incl. run_bash)
@@ -191,6 +192,84 @@ class TUI:
     def _toast_msg(self, msg, secs=2.2):
         self._toast = msg
         self._toast_until = time.time() + secs
+
+    # -- model ------------------------------------------------ #
+    def _cmd_model(self, arg: str):
+        """`/model` — what is running; `/model <tag> [--save]` — switch, and
+        optionally make it this machine's default.
+
+        The --save half is the point: without somewhere to write the answer,
+        every session started on whatever the built-in default was and the
+        model you actually pulled had to be re-typed forever.
+        """
+        from .config import load_settings, save_settings, settings_path
+
+        words = arg.split()
+        save = False
+        for flag in ("--save", "-s"):
+            if flag in words:
+                words.remove(flag)
+                save = True
+        name = " ".join(words).strip()
+
+        if not name:
+            if save:                      # `/model --save` == keep what's running
+                return self._save_model(self.cfg.model)
+            saved = load_settings().get("model")
+            lines = [f"running   {self.cfg.model}"]
+            lines.append(f"default   {saved or '(none saved — using the built-in default)'}")
+            try:
+                pulled = self.agent.client.list_models()
+                lines.append("pulled    " + (", ".join(pulled) if pulled else "nothing yet"))
+            except Exception as e:  # noqa: BLE001
+                lines.append(f"pulled    (cannot ask Ollama: {e})")
+            lines.append(f"settings  {settings_path()}")
+            return self._append("info", "\n".join(lines))
+
+        self.cfg.model = name
+        self.agent.client.model = name
+        if save:
+            return self._save_model(name)
+        self._toast_msg(f"model → {name}")
+        if not self.cfg.remote_endpoint and not self.agent.client.has_model(name):
+            self._append("error", f"heads up: {name!r} is not pulled — run: ollama pull {name}")
+
+    def _save_model(self, name: str):
+        from .config import save_settings
+        try:
+            path = save_settings(model=name)
+        except OSError as e:
+            return self._append("error", f"could not save the model: {e}")
+        self._toast_msg(f"model → {name} (saved)")
+        self._append("info", f"{name} is now this machine's default · {path}")
+
+    def _model_missing(self, name: str):
+        """The model this session wants is not on the machine.
+
+        The old message said `ollama pull <it>` and stopped — which, when the
+        wanted model was the 65 GB default and the machine had a 7B one sitting
+        right there, was advice to download something that would not run. So
+        say what is actually available, and how to make the good one stick.
+        """
+        from .config import load_settings
+
+        try:
+            pulled = self.agent.client.list_models()
+        except Exception:  # noqa: BLE001
+            pulled = []
+        lines = [f"model {name!r} is not pulled."]
+        if pulled:
+            lines.append("  on this machine: " + ", ".join(pulled))
+            lines.append(f"  use one now:     /model {pulled[0]}")
+            lines.append(f"  or for good:     /model {pulled[0]} --save")
+        else:
+            lines.append(f"  get it:          ollama pull {name}")
+            lines.append("  or let the installer pick one that fits this machine:")
+            lines.append("                   python3 recommend-model.py --pull")
+        if not load_settings().get("model") and pulled:
+            lines.append("  (nothing is saved as this machine's default yet — that is why"
+                         " it opened on the built-in one.)")
+        self._append("error", "\n".join(lines))
 
     # -- transcript scrolling -------------------------------- #
     def _enable_mouse(self, on: bool):
@@ -636,10 +715,8 @@ class TUI:
             else:
                 self.cfg.think = False if v == "off" else v
                 self._toast_msg(f"think → {v}")
-        elif cmd == "/model" and arg:
-            self.cfg.model = arg.strip()
-            self.agent.client.model = arg.strip()
-            self._toast_msg(f"model → {self.cfg.model}")
+        elif cmd == "/model":
+            self._cmd_model(arg)
         elif cmd == "/cwd":
             p = os.path.expanduser(arg)
             if arg and os.path.isdir(p):
@@ -888,8 +965,7 @@ class TUI:
             else:
                 self._append("info", f"connected · Ollama {v} · {self.cfg.cwd}")
                 if not self.agent.client.has_model(self.cfg.model):
-                    self._append("error", f"model {self.cfg.model!r} not pulled — "
-                                          f"run: ollama pull {self.cfg.model}")
+                    self._model_missing(self.cfg.model)
                 if self.store is not None and self.cfg.rag and not self.store.embed_available():
                     self._append("info", "recall: embed model not pulled yet — "
                                          "run: ollama pull nomic-embed-text")
