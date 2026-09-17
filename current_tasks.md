@@ -1,7 +1,6 @@
 # JojoAI — current tasks
 
-Everything asked for in this session, in one place. Status is honest: `done`
-means verified, not merely written.
+Status is honest: `done` means verified, not merely written.
 
 Repo: `~/src/jojo-ai` (JojoAI: Python TUI + reference server + landing page).
 Related repo: `~/src/JojoCode` (the teaching platform — separate product, shares
@@ -9,131 +8,68 @@ the `jojocode.in` domain and its Brevo mailer).
 
 ---
 
-## 1 · Recon — understand JojoAI and the TUI
-**Status: mostly done.** Findings so far:
+## This session (17 Sep) — the four you asked for
 
-- Two execution modes. **Local**: TUI talks straight to Ollama. **Remote**: TUI
-  talks to `server/backend`, and the agent loop runs there.
-- **Local tools** live in `tui/jojocode_ai/tools.py` — `TOOLS` (OpenAI-style
-  function schemas), `IMPLS` (name → python fn), `run_tool()` dispatch, and
-  `APPROVAL_REQUIRED = {write_file, edit_file, run_bash}`.
-- **Remote tools** live in `server/backend/src/tools.ts` — a *separate* list.
-- ⚠️ **The two tool sets have already drifted**: local has
-  `list_dir, read_file, write_file, edit_file, run_bash, search, change_dir,
-  finish`; remote has only `list_dir, read_file, write_file, run_command`.
-  Anything new has to be added twice, or the drift has to be fixed first.
-- Agent loop: `tui/jojocode_ai/agent.py`, bounded by `cfg.max_steps`, streams
-  events, and gates approval-required tools through an approver callback.
-- Tests today: `server/control-plane/src/index.test.ts`,
-  `server/shared/src/authorize.test.ts`. **The TUI has no tests at all.**
+### 1 · Login from your terminal — **done, verified**
+Two separate faults, stacked:
 
-Remaining: read `remote.py` / `orchestrator.ts` closely enough to place a tool
-in remote mode.
+1. **Cloudflare answered 403 before the request reached the server.** urllib
+   sends `User-Agent: Python-urllib/3.13` when nobody sets one, and the browser
+   integrity check bans that string (`error code: 1010`). Reproduced, then fixed
+   in `tui/jojocode_ai/net.py` — every outbound request, including the websocket
+   upgrade, now names the product. `tui/tests/test_net.py` is the regression.
+2. **The control plane was not running, and the backend did not know where it
+   would be**, so the endpoint answered `503 sign-in is not configured`. It runs
+   now as `jojoai-control-plane.service`, mail wired to the same Brevo relay
+   JojoCode uses, with the owner's address seeded as SUPERADMIN.
 
----
+Verified: a code was mailed (control-plane log, 15:54), request→verify→token
+mints a 12 h SUPERADMIN session, a client installed from the published wheel
+gets 200 where it used to get 403, and the websocket reaches the gateway through
+Cloudflare and is answered by the control plane's verdict.
 
-## 2 · Installer errors (Windows, and Linux without Python)
-**Status: not yet diagnosed.** Scope from you: errors on install, *especially
-Windows*, and look for the same class of problem on Linux, **especially on
-systems where Python is not natively installed**.
+**You must reinstall to get the fix** — the client is what was banned. Wheel
+0.2.1 is published at `/dl/`, so re-running the installer is enough.
 
-Files: `install/install.ps1` (Windows), `install/install.sh` (Linux/macOS),
-served from `https://ai.jojocode.in/install.sh`.
+Known limits, written down rather than discovered later:
+- `JOJOAI_CP_STORE=memory` — a control-plane restart signs everyone out.
+  Accounts are re-seeded; tokens are not. Postgres before this matters.
+- The **demo access code no longer works**. Real auth is now wired, and
+  `checkAuth` only falls back to it when the control plane is absent.
 
-Early observations (not yet confirmed as the failures you hit):
-- `install.sh` tries a package manager install of Python when missing
-  (`apt/dnf/pacman/zypper/apk/brew`) — that path needs root and will fail or
-  prompt unhelpfully on a locked-down machine.
-- It then needs `venv` separately on Debian (`python3-venv`), and falls back
-  wheel → PyPI → git, dying with "could not install the TUI" if all three fail.
-- Windows has no equivalent guarantee that `py`/`python` exists at all.
+### 2 · The TUI opened on a model the machine had not pulled — **done**
+The installer recommended and pulled qwen2.5-coder:7b; `jojo` still opened on
+gpt-oss:120b, because the recommendation had nowhere to be written down. There
+is now `~/.config/jojocode-ai/settings.json`, written by `recommend-model.py`
+after a successful pull and read by the TUI. `--model` > `JOJO_MODEL` > that
+file > the built-in default. `/model` shows and `/model <tag> --save` sets it.
+Arrives with the reinstall.
 
-Deliverable: reproduce, list each concrete failure mode, then fix.
+### 3 · The landing page backdrop — **done, verified in a browser**
+It froze past `scrollY > innerHeight * 1.6`, which was written into the loop.
+Gone: it animates the whole way down and the scroll now drifts the camera.
+Rewritten as glowing green embers with a real half-life (2.6 s, six to a cycle)
+and a two-lobe additive glow — hot core, wide halo, white at the centre.
+`web/bg-test.mjs` asserts the regression in a real browser.
 
----
+### 4 · Web search for JojoCode — **started: core built and tested, nothing wired**
+`packages/ai/src/websearch.ts` in the JojoCode repo: search (keyless DuckDuckGo,
+or Brave with a key), fetch-one-page-as-text, an SSRF guard that re-checks every
+redirect hop, and the untrusted-content envelope. 15 tests, none touching the
+internet. `docs/web-search.md` there holds the recon, the design, and the order
+of surfaces — teacher-facing and human-in-the-loop first, JojoBot last or never.
 
-## 3 · OTP email never arrives
-**Status: diagnosed — two stacked causes. Not yet fixed.**
-
-You signed in with a verified email (the owner's address) and no code
-arrived. It is not your account, and not Gmail:
-
-1. **The OTP endpoints are not deployed.** `https://ai.jojocode.in` serves the
-   **backend** (`/healthz`, `/status.json`, `/install.sh` → 200). The OTP routes
-   live in the **control-plane**, a different service, which is not routed at
-   that hostname. `POST /api/auth/otp/request` returns **404** — the TUI's login
-   request has nowhere to land.
-2. **Email delivery was never implemented.** In
-   `server/control-plane/src/otp.ts`, `deliver()` in `smtp` mode logs
-   `"SMTP delivery not wired; code for <email>: <code>"` and returns. The
-   default mode is `console`, which writes the code to stderr and a local
-   outbox file. **No email is ever sent, to anyone.**
-
-Fix direction: deploy/route the control-plane, then wire `deliver()` to the
-Brevo SMTP relay JojoCode already uses (verified working: 19 credential emails
-sent, most recent 15 Sep).
+**Waiting on you:** which surface gets it first. Recommendation in that document.
 
 ---
 
-## 4 · Web search for JojoAI
-**Status: recon done, plan not yet written.** Goal: when JojoAI is unsure, it
-searches the web, reads what it finds, and folds a summary into its answer.
+## Still open, from before
 
-Required flow, per you:
-
-> **RECON → DESIGN → IMPLEMENT → TEST HEAVILY**, and if it fails,
-> **BETTER DESIGN → IMPLEMENT → TEST** as a loop.
-
-Open design questions already surfaced:
-- Which provider (no-key DuckDuckGo/SearXNG vs keyed Brave/Tavily).
-- One tool or two (`web_search` + `fetch_url`).
-- Local mode has no server — so where does egress happen in each mode.
-- **Prompt injection is the headline risk**: fetched pages are untrusted text
-  entering the context of an agent that can `write_file` and `run_bash`.
-- **SSRF**: `fetch_url` must refuse localhost, RFC1918, link-local and cloud
-  metadata (`169.254.169.254`).
-- Whether network egress joins `APPROVAL_REQUIRED`.
-
----
-
-## 5 · Implementation plan document
-**Status: pending.** Write the web-search plan (task 4) as a document following
-the RECON → DESIGN → IMPLEMENT → TEST-heavy → re-design loop.
-
----
-
-## 6 · CLAUDE.md for JojoAI
-**Status: pending.** There is **no `CLAUDE.md` in `~/src/jojo-ai`** today (only
-in `~/src/JojoCode`). Write one so a fresh session can pick this up: repo
-layout, the two execution modes, the tool-drift trap, how to run things, and
-where this work stopped.
-
----
-
-## 7 · Landing page is bad on a phone
-**Status: pending.** `ai.jojocode.in` (`web/index.html`, 746 lines, single file).
-From your screenshot at ~390px:
-- The nav wraps onto three ragged lines.
-- The terminal demo card scrolls sideways and clips its own text
-  (`add a --json flag to the export comman…`, `model_done · 4 tools · 3.1k→840 to…`).
-- The hero headline is clipped at the fold.
-
-Needs a proper mobile pass, not a patch.
-
----
-
-## 8 · "A lot of other things to do"
-**Status: awaiting your list.** Placeholder so it is not forgotten.
-
----
-
-## Suggested order
-
-1. **OTP** (3) — diagnosed, users are blocked on it, fix is well understood.
-2. **Installer** (2) — blocks anyone getting the TUI at all.
-3. **Web search** (4 + 5) — the substantial feature.
-4. **Landing page** (7) — visible but nothing is broken behind it.
-5. **CLAUDE.md** (6) — write once the above have settled, so it is accurate.
-
-Tell me if you want a different order — (6) can also come first if you want a
-clean hand-off point before any code changes.
+- **Installer errors on Windows** (`install/install.ps1`). The Linux side was
+  reworked and has `install/test-install.sh`; Windows has had no equivalent
+  pass, and no Windows box here to run one on.
+- **A CLAUDE.md for this repo.** Now exists — check it still matches after the
+  above.
+- **Postgres for the control plane.** `PrismaStore` is named in a comment and
+  does not exist; `MemoryStore` is the only implementation.
+- **"A lot of other things to do"** — still awaiting your list.
