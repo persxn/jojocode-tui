@@ -49,6 +49,36 @@ def execute(name: str, args: dict, root: str) -> dict:
 
 
 def _dispatch(name: str, args: dict, root: str) -> dict:
+    # The network tools are jail-exempt by nature: there is no path to confine,
+    # and the confinement that matters for them is the SSRF guard in
+    # `websearch`, which refuses anything resolving inside this network.
+    if name == "web_search":
+        from . import websearch
+        try:
+            results = websearch.search(
+                args.get("query", ""),
+                args.get("count", 5),
+                provider=os.environ.get("JOJO_SEARCH_PROVIDER", ""),
+                key=os.environ.get("JOJO_SEARCH_KEY", ""),
+            )
+        except websearch.WebError as e:
+            return {"ok": False, "error": str(e)}
+        if not results:
+            return {"ok": True, "stdout": "no results came back (the search provider "
+                                          "returned nothing usable)", "count": 0}
+        body = "\n".join(
+            f"{i}. {r.title}\n   {r.url}" + (f"\n   {r.snippet}" if r.snippet else "")
+            for i, r in enumerate(results, 1)
+        )
+        return {"ok": True, "stdout": _clip(body), "count": len(results)}
+
+    if name == "fetch_url":
+        from . import websearch
+        try:
+            return {"ok": True, "content": websearch.fetch(args.get("url", ""))}
+        except websearch.WebError as e:
+            return {"ok": False, "error": str(e)}
+
     if name == "list_dir":
         full = _jail(root, args.get("path", "."))
         if full is None:
@@ -118,4 +148,8 @@ def summarize(name: str, payload: dict) -> str:
         return f"wrote {payload.get('bytesWritten', 0)} bytes"
     if name == "run_command":
         return f"exit {payload.get('exitCode')}"
+    if name == "web_search":
+        return f"{payload.get('count', 0)} results"
+    if name == "fetch_url":
+        return f"{len(payload.get('content', ''))} chars"
     return "ok"
