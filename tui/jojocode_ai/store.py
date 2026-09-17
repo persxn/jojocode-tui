@@ -24,6 +24,8 @@ import urllib.error
 import urllib.request
 import uuid
 
+from .net import headers as _headers
+
 
 def data_dir() -> str:
     d = os.environ.get("JOJO_DATA") or os.path.expanduser("~/.local/share/jojocode-ai")
@@ -111,7 +113,7 @@ class Store:
         body = json.dumps({"model": self.embed_model, "prompt": text}).encode()
         req = urllib.request.Request(
             self.host + "/api/embeddings", data=body, method="POST",
-            headers={"Content-Type": "application/json"})
+            headers=_headers({"Content-Type": "application/json"}))
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 v = json.loads(r.read()).get("embedding")

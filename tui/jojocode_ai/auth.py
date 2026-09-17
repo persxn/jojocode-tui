@@ -16,6 +16,8 @@ import time
 import urllib.error
 import urllib.request
 
+from .net import headers as _headers
+
 
 def creds_path() -> str:
     base = os.environ.get("JOJO_CONFIG") or os.path.expanduser("~/.config/jojocode-ai")
@@ -57,9 +59,10 @@ def forget(endpoint: str) -> bool:
 
 
 def _post(url: str, body: dict, timeout: int = 20) -> tuple[int, dict]:
+    # The agent matters: a default urllib one is banned at the edge (see net.py).
     req = urllib.request.Request(
         url, data=json.dumps(body).encode(), method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=_headers({"Content-Type": "application/json"}),
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:

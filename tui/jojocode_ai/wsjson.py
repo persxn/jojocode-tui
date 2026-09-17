@@ -21,6 +21,8 @@ import struct
 import threading
 from urllib.parse import urlparse
 
+from .net import headers as _headers
+
 _GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 OP_CONT, OP_TEXT, OP_BIN, OP_CLOSE, OP_PING, OP_PONG = 0x0, 0x1, 0x2, 0x8, 0x9, 0xA
@@ -43,7 +45,10 @@ class WSClient:
     def __init__(self, url: str, headers: dict[str, str] | None = None,
                  connect_timeout: float = 15.0):
         self.url = url
-        self.headers = headers or {}
+        # The upgrade request is an ordinary HTTP request and is filtered like
+        # one — an unnamed or default-urllib client is refused at the edge
+        # before the server ever sees it. See net.py.
+        self.headers = _headers(headers)
         self.connect_timeout = connect_timeout
         self._sock: socket.socket | None = None
         self._buf = b""

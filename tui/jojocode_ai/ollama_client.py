@@ -6,6 +6,8 @@ import json
 import urllib.error
 import urllib.request
 
+from .net import headers as _headers
+
 
 class OllamaError(RuntimeError):
     pass
@@ -20,7 +22,7 @@ class OllamaClient:
 
     # -- introspection ----------------------------------------------------- #
     def _get(self, path: str):
-        req = urllib.request.Request(self.host + path, method="GET")
+        req = urllib.request.Request(self.host + path, method="GET", headers=_headers())
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read().decode())
 
@@ -67,7 +69,7 @@ class OllamaClient:
         data = json.dumps(body).encode()
         req = urllib.request.Request(
             self.host + "/api/chat", data=data, method="POST",
-            headers={"Content-Type": "application/json"},
+            headers=_headers({"Content-Type": "application/json"}),
         )
         try:
             resp = urllib.request.urlopen(req, timeout=self.timeout)
