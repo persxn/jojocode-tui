@@ -52,14 +52,39 @@ Rewritten as glowing green embers with a real half-life (2.6 s, six to a cycle)
 and a two-lobe additive glow — hot core, wide halo, white at the centre.
 `web/bg-test.mjs` asserts the regression in a real browser.
 
-### 4 · Web search for JojoCode — **started: core built and tested, nothing wired**
-`packages/ai/src/websearch.ts` in the JojoCode repo: search (keyless DuckDuckGo,
-or Brave with a key), fetch-one-page-as-text, an SSRF guard that re-checks every
-redirect hop, and the untrusted-content envelope. 15 tests, none touching the
-internet. `docs/web-search.md` there holds the recon, the design, and the order
-of surfaces — teacher-facing and human-in-the-loop first, JojoBot last or never.
+### 4 · Web search — **scope settled, shared machinery built, no surface wired**
 
-**Waiting on you:** which surface gets it first. Recommendation in that document.
+**Your decision: every surface.** The TUI agent while coding, editorials, the
+Forge, student hints and explain, and JojoBot in Discord — not one pilot.
+
+Built and tested in `~/src/JojoCode` (156 tests in `@cjudge/ai`, none touching
+the internet):
+
+- `packages/ai/src/websearch.ts` — search (keyless DuckDuckGo, or Brave with a
+  key), fetch-one-page-as-text, an SSRF guard that re-resolves on **every**
+  redirect hop, and the untrusted-content envelope.
+- `packages/ai/src/research.ts` — the step all five surfaces share: write one
+  query, read the best two or three results, return a digest plus its sources.
+  **The model never names a URL** — it writes a search phrase and this picks
+  what to read, which is what keeps a student's pasted text from becoming a
+  second prompt. A search engine that is down costs the background reading, not
+  the student's hint.
+- `packages/ai/test/no-guard-bypass.test.ts` — the build fails if the guard's
+  one test-only off-switch ever appears under `src/`.
+- `docs/web-search.md` there holds the recon, the design and the rollout order.
+
+**The TUI already has it.** `web_search` and `fetch_url` are live in both local
+and remote modes, behind the approval gate. Nothing to do there.
+
+**Not built, and deliberately not done quietly** — each needs your go-ahead
+because JojoCode is a live class:
+
+1. Wiring the four JojoCode surfaces (a prompt change and a source list each).
+2. `AppConfig.webSearchEnabled` — a Prisma migration against the live database.
+3. A per-user rate limit, needed before Discord goes on: one question can cost
+   three page fetches.
+4. Whether fetched pages are cached in Postgres — a new table of third-party
+   content, which is a publishing decision as much as a technical one.
 
 ---
 
