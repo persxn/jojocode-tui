@@ -23,13 +23,16 @@ tui/jojocode_ai/     the Python TUI (the product)
   remote.py          websocket client for remote mode
   prompts.py         the system prompt (43 lines)
   auth.py            OTP login client + credential store
-  config.py          defaults: JOJO_HOST, JOJO_MODEL (gpt-oss:120b)
+  net.py             the User-Agent every outbound request carries (see below)
+  websearch.py       web_search / fetch_url: SSRF guard + untrusted envelope
+  config.py          settings.json + JOJO_HOST / JOJO_MODEL precedence
 server/
   backend/           runs the agent loop for remote mode; serves ai.jojocode.in
-  control-plane/     accounts, grants, audit, OTP  ← NOT currently deployed
+  control-plane/     accounts, grants, audit, OTP  ← deployed, :7460 (memory store)
   shared/            protocol, rbac, authorize
 install/             install.sh (Linux/macOS), install.ps1 (Windows)
-web/index.html       the ai.jojocode.in landing page (single 746-line file)
+web/index.html       the ai.jojocode.in landing page (single self-contained file)
+web/bg-test.mjs      browser regression for the backdrop (needs playwright)
 docs/                ARCHITECTURE.md, BUILD-PLAN.md, WEB-SEARCH-PLAN.md
 current_tasks.md     what is in flight right now — read this first
 ```
@@ -78,17 +81,37 @@ npm test          # @jojoai/shared + @jojoai/control-plane + ws-resume spike
 npm run typecheck
 ```
 
-**The TUI has no tests at all.** Only `server/control-plane/src/index.test.ts`
-and `server/shared/src/authorize.test.ts` exist. Any substantial TUI work should
-start by creating `tui/tests/` and wiring it into `npm test`.
+TUI tests are `tui/tests/` and need pytest in a venv; they are **not** wired
+into `npm test` yet:
 
-## Deployment reality (verified 17 Sep 2026)
+```sh
+python3 -m venv .venv && .venv/bin/pip install pytest
+.venv/bin/python -m pytest tui/tests -q       # 40 tests
+node web/bg-test.mjs                          # the landing page, in a browser
+```
 
-- `https://ai.jojocode.in` is **live** and serves the **backend**: `/healthz`
-  200, `/status.json`, `/install.sh` 200.
-- The **control-plane is not routed there**. `POST /api/auth/otp/request`
-  returns **404**. Anything depending on accounts, grants or OTP is therefore
-  not working in production.
+## Deployment reality (verified 17 Sep 2026, afternoon)
+
+- `https://ai.jojocode.in` is **live** and serves the **backend**: `/healthz`,
+  `/status.json`, `/install.sh`, `/dl/`, and the landing page.
+- The **control plane runs beside it** (`jojoai-control-plane.service`, :7460)
+  and the backend proxies `/api/auth/*` to it. Sign-in works end to end: a code
+  is mailed through Brevo, verify mints a token, and the gateway honours the
+  control plane's verdict on connect.
+- Config for both halves is one mode-600 `server/.env` (gitignored), read by
+  both systemd units. `server/README.md` has the shape.
+- Two consequences of that wiring, both easy to trip over:
+  **the demo access code no longer works** (the fallback only applies when the
+  control plane is absent), and **`JOJOAI_CP_STORE=memory` forgets tokens on
+  restart**, so restarting the control plane signs everybody out.
+
+### Cloudflare bans the default urllib agent
+
+`ai.jojocode.in` sits behind Cloudflare, whose browser-integrity check answers
+`403 error code: 1010` to `User-Agent: Python-urllib/3.x`. That is what made
+every hosted login fail with `otp request failed (HTTP 403)` — a message that
+looks like an account problem and is a header problem. **Anything new that
+makes an HTTP request from the TUI must go through `net.headers()`.**
 
 ---
 
@@ -96,28 +119,16 @@ start by creating `tui/tests/` and wiring it into `npm test`.
 
 Summary of where things stopped:
 
-1. **OTP email never arrives — diagnosed, unfixed.** Two stacked causes:
-   (a) the control-plane isn't deployed/routed at `ai.jojocode.in`, so the
-   TUI's login request 404s; (b) `server/control-plane/src/otp.ts::deliver()`
-   **never sends mail** — in `smtp` mode it logs `"SMTP delivery not wired"` and
-   returns; the default `console` mode writes the code to stderr and a local
-   outbox file. Fix direction: route the control-plane, then wire `deliver()` to
-   the Brevo relay JojoCode already uses (`smtp-relay.brevo.com:587`, verified
-   authenticating). Reported against a real, verified address — it is not an
-   account problem.
-2. **Installer errors — not yet diagnosed.** Reported on Windows especially,
-   and suspected on Linux where Python isn't preinstalled. `install.sh` shells
-   out to a package manager for Python (needs root), needs `python3-venv`
-   separately on Debian, then falls back wheel → PyPI → git. `install.ps1` has
-   no guarantee `py`/`python` exists. Reproduce before changing anything.
-3. **Web search — planned, not built.** See `docs/WEB-SEARCH-PLAN.md`. Two
-   tools (`web_search`, `fetch_url`), keyless provider by default, SSRF guard,
-   untrusted-content framing for prompt injection, and the approval gate left
-   intact. The plan's three open questions need the owner's answer before
-   implementation starts.
-4. **Landing page is bad on a phone.** At ~390px the nav wraps to three ragged
-   lines, the terminal demo card scrolls sideways and clips its own text, and
-   the hero is clipped at the fold. `web/index.html` is one self-contained file.
+1. **Windows installer — still undiagnosed.** `install.sh` was reworked and has
+   `install/test-install.sh`; `install.ps1` has had no equivalent pass, and
+   there is no Windows machine here to run one on. It also has no guarantee
+   `py`/`python` exists before it uses one.
+2. **Postgres for the control plane.** `PrismaStore` is named in a comment in
+   `control-plane/src/store.ts` and does not exist. Until it does, every restart
+   signs everybody out.
+3. **Publishing the wheel.** `dist/dl/tui-wheel` is a pointer file naming the
+   current wheel; the installers read it. Building a new TUI without updating
+   both means reinstalls silently keep the old client.
 
 ## Style
 
