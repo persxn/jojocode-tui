@@ -29,6 +29,19 @@ export const config = {
 
   /** How OTP codes leave the building. 'console' + a dev outbox file, or 'smtp'. */
   mail: (env.JOJOAI_MAIL ?? 'console') as 'console' | 'smtp',
+  /**
+   * Discrete SMTP settings, which is what a relay actually gives you.
+   *
+   * `JOJOAI_SMTP_URL` came first and is still read as a fallback, but a URL is
+   * the wrong shape for this: a Brevo SMTP key is 90 characters and lands in
+   * the password position, where it has to be percent-encoded by hand and is
+   * silently truncated at the first `@` or `/` if it is not. Four plain
+   * variables cannot be got wrong that way.
+   */
+  smtpHost: env.JOJOAI_SMTP_HOST ?? '',
+  smtpPort: Number(env.JOJOAI_SMTP_PORT ?? 587),
+  smtpUser: env.JOJOAI_SMTP_USER ?? '',
+  smtpPass: env.JOJOAI_SMTP_PASS ?? '',
   smtpUrl: env.JOJOAI_SMTP_URL ?? '',
   mailFrom: env.JOJOAI_MAIL_FROM ?? 'Jojo AI <no-reply@jojocode.in>',
 
@@ -48,8 +61,47 @@ export function assertConfig(): void {
     if (config.store === 'prisma' && !config.databaseUrl) {
       throw new Error('JOJOAI_DATABASE_URL is required when JOJOAI_CP_STORE=prisma');
     }
-    if (config.mail === 'smtp' && !config.smtpUrl) throw new Error('JOJOAI_SMTP_URL is required when JOJOAI_MAIL=smtp');
+    if (config.mail === 'smtp' && !smtpSettings()) {
+      throw new Error(
+        'JOJOAI_MAIL=smtp needs JOJOAI_SMTP_HOST/USER/PASS (or JOJOAI_SMTP_URL)',
+      );
+    }
   }
+}
+
+export interface SmtpSettings {
+  host: string;
+  port: number;
+  user: string;
+  pass: string;
+  from: string;
+}
+
+/**
+ * The SMTP settings, or null when mail is not fully configured.
+ *
+ * Null rather than a throw, because "not set up" is the ordinary state of a
+ * fresh install and each caller says so in its own words: boot warns, and
+ * `deliver` falls back to the console outbox rather than losing the code.
+ */
+export function smtpSettings(): SmtpSettings | null {
+  let { smtpHost: host, smtpPort: port, smtpUser: user, smtpPass: pass } = config;
+
+  if ((!host || !user || !pass) && config.smtpUrl) {
+    try {
+      const url = new URL(config.smtpUrl);
+      host = host || url.hostname;
+      port = url.port ? Number(url.port) : port;
+      user = user || decodeURIComponent(url.username);
+      pass = pass || decodeURIComponent(url.password);
+    } catch {
+      return null;
+    }
+  }
+
+  if (!host || !user || !pass) return null;
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) return null;
+  return { host, port, user, pass, from: config.mailFrom };
 }
 
 export type Config = typeof config;
