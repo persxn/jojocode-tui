@@ -49,9 +49,22 @@ Two things that follow from wiring it up, and surprise people:
 - **The demo code stops working.** `checkAuth` only falls back to
   `JOJOAI_DEMO_CODE` when the control plane is *not* configured. Once it is,
   every token is minted by OTP.
-- **`JOJOAI_CP_STORE=memory` forgets on restart.** Accounts are re-seeded from
-  `JOJOAI_OWNER_EMAIL` / `JOJOAI_SEED`, but issued tokens are not — a restart
-  signs everybody out. Point it at Postgres before that matters.
+- **Production uses Postgres** (`JOJOAI_CP_STORE=prisma` +
+  `JOJOAI_DATABASE_URL`, since 21 Sep). Database `jojoai`, role `jojoai`, in the
+  same Postgres container as JojoCode but a separate database the `jojoai` role
+  alone can reach (JojoCode's `cjudge` database has CONNECT revoked from
+  PUBLIC). Tokens now survive a restart. `JOJOAI_CP_STORE=memory` is still the
+  default for dev/CI, and it still forgets everything on restart.
+- **Schema changes:** edit `shared/prisma/schema.prisma`, add a migration under
+  `shared/prisma/migrations/`, `prisma migrate deploy`, then
+  `npm run -w @jojoai/shared prisma:generate` (the client is gitignored — a fresh
+  checkout must generate it before the control plane will start with `prisma`).
+- **Backups:** `server/scripts/backup-db.sh`, nightly at 02:40 via the user timer
+  `jojoai-backup.timer` (`deploy/`). Dumps land in `backups/` (gitignored, 30 days).
+  JojoCode's own backup does not cover this database.
+- **Tests against Postgres:** `JOJOAI_TEST_DATABASE_URL=…/jojoai_test` runs the
+  store contract (`control-plane/src/store.test.ts`) against both stores. That
+  database is wiped by the test — never point it at `jojoai`.
 
 Mail is `JOJOAI_MAIL=smtp` plus `JOJOAI_SMTP_HOST/PORT/USER/PASS`. Four plain
 variables rather than a URL: a relay key is long and lands in the password

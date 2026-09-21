@@ -1,9 +1,9 @@
 /**
  * Storage seam. The HTTP layer only ever talks to this interface, so the
  * control plane runs with `MemoryStore` (dev / CI — no database) or, in
- * production, a Prisma-backed store against the schema in
- * server/shared/prisma/schema.prisma. Only MemoryStore ships here; the Prisma
- * adapter is a thin mechanical mapping and is left as a deployment task.
+ * production, `PrismaStore` (prisma-store.ts) against the schema in
+ * server/shared/prisma/schema.prisma. `store.test.ts` runs one contract against
+ * both, so they cannot drift apart.
  */
 import { randomUUID } from 'node:crypto';
 import type { Role, AccountStatus, AccessMode, OpenHours } from '@jojoai/shared';

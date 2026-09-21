@@ -35,3 +35,6 @@ docs/phase0/spike-ws-resume/sideeffect.log
 # misc
 *.log
 .DS_Store
+
+# database dumps — real accounts
+backups/

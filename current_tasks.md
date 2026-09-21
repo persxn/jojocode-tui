@@ -8,7 +8,64 @@ the `jojocode.in` domain and its Brevo mailer).
 
 ---
 
-## This session (17 Sep) — the four you asked for
+## 21 Sep — finishing the plate
+
+### Web search in JojoCode — **done, deployed, verified live**
+Built as a property of JojoAI rather than of any one feature: `ask()` /
+`askJson()` in `@cjudge/ai` take `web: { question, surface, actor }` and the AI
+package does the rest — decides whether to search (the model writes a query or
+declines), reads the pages, enforces the switch, a per-person (12/h) and
+per-process (20/min) budget, a 6 h in-memory cache and a 20 s deadline, and
+hands back the sources. Every failure is an ordinary answer without the web.
+A new service gets it by passing `web`; nothing else to wire.
+
+Wired to every surface you named: **JojoBot** (concept questions — "Sources:"
+under the embed; never on profile/class-data routes), **the Forge** (teacher,
+student, pasted questions, MCP), problem drafting, **hints**, playground
+**explain**, **editorials** ("Further reading" block), ask-about-an-editorial,
+the teacher assistant's general chat and MCQ explanations.
+
+The four open decisions, settled:
+1. Surfaces wired — above.
+2. `AppConfig.webSearchEnabled` — migrated on the live DB after a fresh backup
+   (additive column, default on, subordinate to `aiEnabled`); toggle on
+   /teacher/settings, read per call by web, worker, Discord and MCP.
+3. Rate limit — in `@cjudge/ai/web.ts`, on top of the bot's existing
+   hourly/daily ask limits.
+4. Caching — in memory only. No third-party pages are written to Postgres, so
+   the publishing question does not arise.
+
+Verified: all JojoCode suites green — 1,900 tests incl. the injection suite; deployed with
+`deploy.sh`; worker and bot restarted; live check — the bot's concept answer to
+"why does scanf skip my fgets" came back grounded in two real pages with
+sources, ~15 s end to end. Commits `35f0de4` + the instrumentation fix, local
+only (not pushed). Details: `~/src/JojoCode/docs/web-search.md` §5.
+
+### Postgres for the control plane — **done, live, verified**
+`PrismaStore` (`server/control-plane/src/prisma-store.ts`) against the existing
+schema; first migration `20260921090000_init`. Database `jojoai` / role
+`jojoai` in the `cjudge-postgres` container, isolated from JojoCode's data
+(CONNECT on `cjudge` revoked from PUBLIC). One contract test runs against both
+stores. Live: `store=prisma`; a token minted before a restart was still honoured
+after it, then revoked. Nightly dump via `jojoai-backup.timer`.
+This switch signed everyone out one last time; from now on restarts do not.
+
+### Windows installer — **diagnosed and fixed; not run on Windows**
+Root cause: Windows PowerShell 5.1 (what `irm | iex` gets on a stock machine)
+with `$ErrorActionPreference='Stop'` makes any native stderr line a terminating
+error, even with `2>$null`. pip's "a new release of pip" notice therefore
+failed the wheel install, and the git fallback died with a raw exception.
+Fixed with one `Invoke-Native` helper for every native call, exit codes checked
+(venv creation, pip present — the Windows twin of the Linux ensurepip bug),
+`$args` no longer shadowed, file made pure ASCII. `install/test-install-ps1.ps1`
+proves the helper under pwsh 7 here; already live (the backend serves
+`install/` from disk).
+
+### CLAUDE.md — **updated** to match the above.
+
+---
+
+## 17 Sep — the four you asked for
 
 ### 1 · Login from your terminal — **done, verified**
 Two separate faults, stacked:
@@ -88,13 +145,10 @@ because JojoCode is a live class:
 
 ---
 
-## Still open, from before
+## Still open
 
-- **Installer errors on Windows** (`install/install.ps1`). The Linux side was
-  reworked and has `install/test-install.sh`; Windows has had no equivalent
-  pass, and no Windows box here to run one on.
-- **A CLAUDE.md for this repo.** Now exists — check it still matches after the
-  above.
-- **Postgres for the control plane.** `PrismaStore` is named in a comment and
-  does not exist; `MemoryStore` is the only implementation.
+- **A real Windows install.** The fix is reasoned and tested under pwsh 7 on
+  Linux; nobody has run it on Windows 5.1 yet.
+- **Push both repos.** JojoCode `35f0de4` and the JojoAI changes are local
+  commits; nothing has been pushed.
 - **"A lot of other things to do"** — still awaiting your list.

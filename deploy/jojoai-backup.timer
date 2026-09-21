@@ -1,0 +1,9 @@
+[Unit]
+Description=Jojo AI — nightly control-plane database backup
+
+[Timer]
+OnCalendar=*-*-* 02:40
+Persistent=true
+
+[Install]
+WantedBy=timers.target

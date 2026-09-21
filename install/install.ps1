@@ -38,11 +38,42 @@ function Warn($m) { Write-Host "! $m" -ForegroundColor Yellow }
 # Two reasons, both of which bit this script. With $ErrorActionPreference =
 # 'Stop', Write-Error *throws*, so the `exit 1` after it never ran and the user
 # saw a raw exception instead of the sentence. And `exit` inside `irm | iex`
-# exits the whole PowerShell session — closing the terminal of somebody who
+# exits the whole PowerShell session - closing the terminal of somebody who
 # only mistyped a model name.
 function Die($m) { Write-Host "install: $m" -ForegroundColor Red; throw $m }
 
 function Have($name) { [bool](Get-Command $name -ErrorAction SilentlyContinue) }
+
+<#
+  Run a native program and hand back its stdout and exit code - never a throw.
+
+  Windows PowerShell 5.1 is what `irm | iex` runs in on a stock machine, and
+  with $ErrorActionPreference = 'Stop' it turns *any* line a native program
+  writes to stderr into a terminating NativeCommandError - even one redirected
+  with 2>$null. pip writes its "a new release of pip is available" notice to
+  stderr, so every pip call here used to throw: the wheel install failed inside
+  its try, the git fallback threw a raw exception, and the installer died with
+  a stack trace on a machine where nothing was actually wrong. PowerShell 7
+  does not do this, which is why it never reproduced there.
+
+  So the preference is relaxed for the duration of the call only, stderr is
+  discarded, and the caller decides what the exit code means.
+#>
+function Invoke-Native([string]$Exe, [string[]]$Arguments) {
+  $saved = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  # PowerShell 7.3+ can also be told to throw on a non-zero exit code. Scoped
+  # to this function, so the caller's setting is untouched.
+  $PSNativeCommandUseErrorActionPreference = $false
+  try {
+    $out = & $Exe @Arguments 2>$null
+    return @{ Out = $out; Code = $LASTEXITCODE }
+  } catch {
+    return @{ Out = $null; Code = -1 }
+  } finally {
+    $ErrorActionPreference = $saved
+  }
+}
 
 # Re-read PATH from the registry into this process. winget does not refresh the
 # PATH of the shell that invoked it, so anything it just installed is invisible
@@ -62,7 +93,7 @@ function Sync-Path {
 
   The command and its leading arguments are kept apart deliberately. The old
   version stored "py -3" as one string and split it, which handed $null as an
-  argument for the single-word candidates — `& python3 $null -c ...` — so
+  argument for the single-word candidates - `& python3 $null -c ...` - so
   `python3` and `python` never matched and a machine with either but not the
   `py` launcher was told to install Python it already had.
 #>
@@ -72,10 +103,14 @@ function Find-Python {
       @{ Exe = 'python3'; Pre = @() },
       @{ Exe = 'python';  Pre = @() })) {
     if (-not (Have $c.Exe)) { continue }
+    # Not `$args` - that is PowerShell's own automatic variable.
+    $probe = @($c.Pre) + @('-c', 'import sys;print("%d.%d"%sys.version_info[:2])')
+    # The Microsoft Store stub `python.exe` exists on a bare machine, prints an
+    # advert to stderr and exits 9009; the exit code is what rules it out.
+    $r = Invoke-Native $c.Exe $probe
     try {
-      $args = @($c.Pre) + @('-c', 'import sys;print("%d.%d"%sys.version_info[:2])')
-      $v = & $c.Exe @args 2>$null
-      if ($v -and [version]$v -ge [version]'3.9') { return $c }
+      $v = [string]($r.Out | Select-Object -Last 1)
+      if ($r.Code -eq 0 -and $v -and [version]$v.Trim() -ge [version]'3.9') { return $c }
     } catch { }
   }
   foreach ($p in @(
@@ -103,7 +138,7 @@ if (-not $py) {
   $py = Find-Python
 }
 if (-not $py) { Die 'Python installed but could not be located - open a new terminal and re-run.' }
-Write-Host "  $($py.Exe) $($py.Pre -join ' ')  ($(& $py.Exe @($py.Pre + @('--version')) 2>&1))"
+Write-Host "  $($py.Exe) $($py.Pre -join ' ')  ($((Invoke-Native $py.Exe @($py.Pre + @('--version'))).Out))"
 
 # ---------------------------------------------------------------------------
 # venv + the TUI
@@ -113,12 +148,24 @@ Step 'The TUI'
 New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
 $vpy = Join-Path $Venv 'Scripts\python.exe'
 if (-not (Test-Path $vpy)) {
-  & $py.Exe @($py.Pre + @('-m', 'venv', $Venv))
-  if (-not (Test-Path $vpy)) { Die "could not create a virtualenv at $Venv" }
+  $made = Invoke-Native $py.Exe @($py.Pre + @('-m', 'venv', $Venv))
+  if ($made.Code -ne 0 -or -not (Test-Path $vpy)) { Die "could not create a virtualenv at $Venv" }
 }
-& $vpy -m pip install --quiet --upgrade pip 2>$null | Out-Null
 
-function Pip($spec) { & $vpy -m pip install --quiet $spec 2>$null | Out-Null; return ($LASTEXITCODE -eq 0) }
+# A venv can exist without pip in it (a Python built without ensurepip), and
+# every install below would then fail with a message about the TUI rather than
+# about pip. The Linux installer learnt this on python3-minimal; ask directly.
+if ((Invoke-Native $vpy @('-m', 'pip', '--version')).Code -ne 0) {
+  [void](Invoke-Native $vpy @('-m', 'ensurepip', '--upgrade'))
+  if ((Invoke-Native $vpy @('-m', 'pip', '--version')).Code -ne 0) {
+    Die "the virtualenv at $Venv has no pip. Reinstall Python from python.org (tick 'pip'), delete $Venv, and re-run."
+  }
+}
+[void](Invoke-Native $vpy @('-m', 'pip', 'install', '--quiet', '--disable-pip-version-check', '--upgrade', 'pip'))
+
+function Pip($spec) {
+  return ((Invoke-Native $vpy @('-m', 'pip', 'install', '--quiet', '--disable-pip-version-check', $spec)).Code -eq 0)
+}
 
 $installed = $false
 if ($env:JOJO_TUI_SOURCE) {
@@ -146,7 +193,7 @@ if (-not $installed) { Die "could not install the TUI.`n  Tried: $Endpoint/dl/, 
 
 $jojoExe = Join-Path $Venv 'Scripts\jojo.exe'
 if (-not (Test-Path $jojoExe)) { Die "the TUI installed but $jojoExe is missing" }
-Write-Host "  $(& $jojoExe --version 2>&1)"
+Write-Host "  $((Invoke-Native $jojoExe @('--version')).Out)"
 
 # ---------------------------------------------------------------------------
 # The shim, and PATH
@@ -155,7 +202,7 @@ Write-Host "  $(& $jojoExe --version 2>&1)"
 Step 'Launcher'
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 
-# `%~dp0` — the shim's own directory — rather than the absolute path to the
+# `%~dp0` - the shim's own directory - rather than the absolute path to the
 # venv. It makes the shim independent of where LOCALAPPDATA is, and it means
 # the file contains no non-ASCII bytes even when the user's profile name does
 # (a `.cmd` is read in the console's OEM code page, and an accented path
@@ -168,8 +215,8 @@ Write-Host "  $BinDir\jojo.cmd"
   Add $BinDir to the *user* PATH, without destroying it.
 
   [Environment]::GetEnvironmentVariable('Path','User') returns the value with
-  %VARIABLES% already expanded. Writing that back — which is what
-  SetEnvironmentVariable does — replaces every reference with whatever it
+  %VARIABLES% already expanded. Writing that back - which is what
+  SetEnvironmentVariable does - replaces every reference with whatever it
   happened to expand to at install time, permanently, for the whole account.
   A user whose PATH said %JAVA_HOME%\bin stops tracking their JDK. So the raw
   value is read straight out of the registry with expansion suppressed, and
@@ -189,7 +236,7 @@ function Add-ToUserPath([string]$Dir) {
     if ($parts -contains $Dir) { return $false }
 
     # A trailing or doubled ';' leaves an empty PATH entry, which Windows reads
-    # as "the current directory" — a real hazard, and what a naive
+    # as "the current directory" - a real hazard, and what a naive
     # "$raw;$Dir" produced on a profile that had never had a user PATH.
     $next = (@($parts) + @($Dir)) -join ';'
 
@@ -206,7 +253,7 @@ function Add-ToUserPath([string]$Dir) {
 
 # Tell the rest of Windows the environment changed, so a newly opened Explorer
 # or terminal sees it without a sign-out.
-function Broadcast-EnvChange {
+function Send-EnvChange {
   try {
     if (-not ('JojoWin32' -as [type])) {
       Add-Type -Namespace '' -Name 'JojoWin32' -MemberDefinition @'
@@ -224,14 +271,14 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
 
 if (Add-ToUserPath $BinDir) {
   Write-Host "  added to your user PATH"
-  Broadcast-EnvChange
+  Send-EnvChange
 } else {
   Write-Host "  already on your user PATH"
 }
 
 # Always fix up *this* process, not only when the registry changed. Re-running
 # in a terminal opened before the first install must still leave `jojo` working
-# in that terminal — previously the process PATH was only touched inside the
+# in that terminal - previously the process PATH was only touched inside the
 # "if we just added it" branch, so the second run left you exactly where you
 # started.
 if (($env:Path -split ';') -notcontains $BinDir) { $env:Path = "$env:Path;$BinDir" }
@@ -261,8 +308,14 @@ if ($env:JOJO_NO_OLLAMA -eq '1') {
     try {
       $rec = Join-Path $env:TEMP 'jojo-recommend-model.py'
       Invoke-WebRequest -UseBasicParsing "$Endpoint/recommend-model.py" -OutFile $rec
-      if ($env:JOJO_MODEL) { & $vpy $rec --model $env:JOJO_MODEL --pull --yes }
-      else { & $vpy $rec --pull --yes }
+      # Not through Invoke-Native: the pull's progress bar belongs on screen.
+      # The preference is relaxed so its stderr cannot abort the install.
+      $saved = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+      try {
+        if ($env:JOJO_MODEL) { & $vpy $rec --model $env:JOJO_MODEL --pull --yes }
+        else { & $vpy $rec --pull --yes }
+      } finally { $ErrorActionPreference = $saved }
+      if ($LASTEXITCODE -ne 0) { throw "recommend-model exited $LASTEXITCODE" }
     } catch {
       Warn "model pull failed - pick one later:  ollama pull gpt-oss:20b"
     }

@@ -56,6 +56,12 @@ export function isProd(): boolean {
 }
 
 export function assertConfig(): void {
+  // Outside production too: a store named 'prisma' with nowhere to connect is
+  // a misconfiguration, and silently falling back to memory would be the exact
+  // "everybody signed out on restart" surprise the durable store exists to end.
+  if (config.store === 'prisma' && !config.databaseUrl) {
+    throw new Error('JOJOAI_DATABASE_URL is required when JOJOAI_CP_STORE=prisma');
+  }
   if (isProd()) {
     if (!config.serviceToken) throw new Error('JOJOAI_SERVICE_TOKEN is required in production');
     if (config.store === 'prisma' && !config.databaseUrl) {

@@ -1,0 +1,6 @@
+[Unit]
+Description=Jojo AI — back up the control-plane database
+
+[Service]
+Type=oneshot
+ExecStart=%h/src/jojo-ai/server/scripts/backup-db.sh

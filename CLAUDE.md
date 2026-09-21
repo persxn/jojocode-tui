@@ -100,10 +100,15 @@ node web/bg-test.mjs                          # the landing page, in a browser
   control plane's verdict on connect.
 - Config for both halves is one mode-600 `server/.env` (gitignored), read by
   both systemd units. `server/README.md` has the shape.
-- Two consequences of that wiring, both easy to trip over:
-  **the demo access code no longer works** (the fallback only applies when the
-  control plane is absent), and **`JOJOAI_CP_STORE=memory` forgets tokens on
-  restart**, so restarting the control plane signs everybody out.
+- One consequence of that wiring that is easy to trip over: **the demo access
+  code no longer works** (the fallback only applies when the control plane is
+  absent).
+- **The control plane is on Postgres** since 21 Sep (`JOJOAI_CP_STORE=prisma`,
+  database `jojoai` beside JojoCode's in the `cjudge-postgres` container, its
+  own role). Restarts no longer sign anybody out. The Prisma client is
+  gitignored: `npm run -w @jojoai/shared prisma:generate` after a fresh
+  checkout. Nightly dump: `jojoai-backup.timer` → `backups/`. See
+  `server/README.md`.
 
 ### Cloudflare bans the default urllib agent
 
@@ -119,14 +124,14 @@ makes an HTTP request from the TUI must go through `net.headers()`.**
 
 Summary of where things stopped:
 
-1. **Windows installer — still undiagnosed.** `install.sh` was reworked and has
-   `install/test-install.sh`; `install.ps1` has had no equivalent pass, and
-   there is no Windows machine here to run one on. It also has no guarantee
-   `py`/`python` exists before it uses one.
-2. **Postgres for the control plane.** `PrismaStore` is named in a comment in
-   `control-plane/src/store.ts` and does not exist. Until it does, every restart
-   signs everybody out.
-3. **Publishing the wheel.** `dist/dl/tui-wheel` is a pointer file naming the
+1. **Windows installer — diagnosed and fixed, not yet run on Windows.** Windows
+   PowerShell 5.1 with `$ErrorActionPreference='Stop'` turns any native stderr
+   line into a terminating error, even with `2>$null` — so pip's "new release"
+   notice killed the install. Every native call now goes through
+   `Invoke-Native`. `install/test-install-ps1.ps1` checks it with pwsh on Linux
+   (`~/.local/opt/pwsh/pwsh`); the first real Windows install is still the
+   test that matters.
+2. **Publishing the wheel.** `dist/dl/tui-wheel` is a pointer file naming the
    current wheel; the installers read it. Building a new TUI without updating
    both means reinstalls silently keep the old client.
 

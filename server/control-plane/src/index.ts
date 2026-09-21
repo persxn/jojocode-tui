@@ -3,8 +3,9 @@
  *
  * The always-on half. Issues/revokes login tokens (email + OTP), owns
  * accounts/grants/config/audit, and answers the backend's authz checks.
- * Runs with an in-memory store by default (dev/CI); point JOJOAI_CP_STORE=prisma
- * at a database for real use.
+ * Runs with an in-memory store by default (dev/CI); JOJOAI_CP_STORE=prisma with
+ * JOJOAI_DATABASE_URL uses Postgres (prisma-store.ts), which is what makes a
+ * restart stop signing everybody out.
  *
  * Routes
  *   GET  /healthz
@@ -17,12 +18,14 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { authorize, type AuthzInput } from '@jojoai/shared/authorize';
 import { config, assertConfig } from './config.ts';
 import { MemoryStore, seedStore, type Store } from './store.ts';
+import { PrismaStore } from './prisma-store.ts';
 import { generateCode, hashCode, codeMatches, deliver } from './otp.ts';
 import { mintToken, hashToken, secretEquals } from './tokens.ts';
 
 assertConfig();
 
-const store: Store = new MemoryStore(); // swap for a PrismaStore when JOJOAI_CP_STORE=prisma
+const store: Store =
+  config.store === 'prisma' ? PrismaStore.fromUrl(config.databaseUrl) : new MemoryStore();
 await seedStore(store, { ownerEmail: config.ownerEmail, seedJson: config.seedJson });
 
 // ── helpers ──────────────────────────────────────────────────────────────
